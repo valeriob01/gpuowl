@@ -13,7 +13,6 @@
 struct Args;
 struct PRPResult;
 struct PRPState;
-class GCD;
 
 class Gpu {
   u32 E;
@@ -23,12 +22,9 @@ class Gpu {
   bool useLongCarry;
   bool useMiddle;
 
-  unique_ptr<GCD> gcd;
-  
   Queue queue;
   
   Kernel carryFused;
-  Kernel carryFusedMul;
   Kernel fftP;
   Kernel fftW;
   Kernel fftH;
@@ -42,22 +38,20 @@ class Gpu {
   Kernel transposeW, transposeH;
   Kernel transposeIn, transposeOut;
 
-  Kernel square;
   Kernel multiply;
-  Kernel multiplySub;
   Kernel tailFused;
   Kernel readResidue;
   Kernel isNotZero;
   Kernel isEqual;
   
-  Buffer bufData, bufCheck, bufAux, bufBase, bufAcc;
+  Buffer bufData, bufCheck, bufAux, bufBase;
   Buffer bufTrigW, bufTrigH;
-  Buffer bufA, bufI;
+  Buffer bufA;
+  Buffer bufI;
   Buffer buf1, buf2, buf3;
   Buffer bufCarry;
   Buffer bufReady;
   Buffer bufSmallOut;
-  Buffer bufBaseDown;
 
   vector<u32> computeBase(u32 E, u32 B1);
   pair<vector<u32>, vector<u32>> seedPRP(u32 E, u32 B1);
@@ -74,8 +68,8 @@ class Gpu {
   void writeIn(const vector<u32> &words, Buffer &buf);
   void writeIn(const vector<int> &words, Buffer &buf);
   
-  void modSqLoopMul(Buffer &io, const vector<bool> &muls);
-  void modSqLoopAcc(Buffer &io, const vector<bool> &muls);
+  void modSqLoop(Buffer &io, u32 reps);
+  // void modSqLoopAcc(Buffer &io, const vector<bool> &muls);
   
   void modMul(Buffer &in, Buffer &io);
   bool equalNotZero(Buffer &bufCheck, Buffer &bufAux);
@@ -83,19 +77,18 @@ class Gpu {
   
   vector<u32> writeBase(const vector<u32> &v);
 
-  PRPState loadPRP(u32 E, u32 iniB1, u32 iniBlockSize);
-  void doStage0(u32 k, u32 B1, u32 blockSize, vector<u32> &&base, vector<bool> &&basePower);
+  PRPState loadPRP(u32 E, u32 iniBlockSize);
   
 public:
   static unique_ptr<Gpu> make(u32 E, const Args &args);
   
   Gpu(u32 E, u32 W, u32 BIG_H, u32 SMALL_H, int nW, int nH,
-      cl_program program, cl_device_id device, cl_context context,
+      cl_program program, const std::vector<cl_device_id> &devices, cl_context context,
       bool timeKernels, bool useLongCarry);
 
   ~Gpu();
   
-  void writeState(const vector<u32> &check, const vector<u32> &base, const vector<u32> &gcdAcc, u32 blockSize);
+  void writeState(const vector<u32> &check, const vector<u32> &base, u32 blockSize);
   
   vector<u32> roundtripData()  { return writeData(readData()); }
   vector<u32> roundtripCheck() { return writeCheck(readCheck()); }
@@ -109,9 +102,7 @@ public:
   bool doCheck(int blockSize);
   void updateCheck();
 
-  void dataLoopMul(const vector<bool> &muls) { modSqLoopMul(bufData, muls); }
-  void dataLoopAcc(const vector<bool> &accs) { modSqLoopAcc(bufData, accs); }
-  u32 dataLoopAcc(u32 begin, u32 end, const vector<bool> &kset);
+  void dataLoop(u32 reps) { modSqLoop(bufData, reps); }
   
   void finish();
 
@@ -119,8 +110,7 @@ public:
 
   vector<u32> readCheck();
   vector<u32> readData();
-  vector<u32> readAcc();
 
-  PRPResult isPrimePRP(u32 E, const Args &args, u32 B1, u32 B2);
+  PRPResult isPrimePRP(u32 E, const Args &args);
   u32 getFFTSize() { return N; }
 };

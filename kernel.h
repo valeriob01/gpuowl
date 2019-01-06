@@ -37,7 +37,7 @@ public:
     // assert((workSize % groupSize == 0) || (log("%s\n", name.c_str()), false));
   }
 
-  template<typename... Args> void setFixedArgs(int pos, Args &...tail) { setArgs(pos, tail...); }
+  template<typename... Args> void setFixedArgs(int pos, const Args &...tail) { setArgs(pos, tail...); }
   
   template<typename... Args> void operator()(const Args &...args) {
     setArgs(0, args...);
@@ -50,7 +50,7 @@ public:
       Timer timer;
       ::run(queue, kernel.get(), groupSize, nWorkGroups * groupSize, name);
       finish(queue);
-      stats.add(timer.deltaMicros(), 1, 0);
+      stats.add(timer.deltaMicros(), 1);
     } else {
       ::run(queue, kernel.get(), groupSize, nWorkGroups * groupSize, name);
     }
