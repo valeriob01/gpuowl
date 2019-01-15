@@ -72,6 +72,7 @@ parser.add_argument('-u', dest='username', default='', help="Primenet user name"
 parser.add_argument('-p', dest='password', help="Primenet password")
 parser.add_argument('-t', dest='timeout',  type=int, default=7200, help="Seconds to sleep between updates")
 parser.add_argument('--dirs', metavar='DIR', nargs='+', help="GpuOwl directories to scan", default=".")
+parser.add_argument('-w', dest='worktype', type=int, default=150, help="GIMPS work type. 150, 151, 152")
 
 options = parser.parse_args()
 timeout = int(options.timeout)
@@ -96,6 +97,7 @@ login(user, password)
 
 PRP_FIRST_TIME = 150
 PRP_DC = 151
+PRP_WORLD_RECORD = 152
 
 sents = [loadLines(d + "sent.txt") for d in dirs]
 
@@ -112,7 +114,7 @@ def handle(folder, sent):
     if newResults or needFetch:
         login(user, password)
         if newResults: sendResults(newResults, sent, sentName, retryName)
-        if needFetch: appendLine(worktodoName, fetch(PRP_FIRST_TIME))
+        if needFetch: appendLine(worktodoName, fetch(options.worktype))
     
 
 while True:
