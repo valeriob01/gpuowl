@@ -276,12 +276,12 @@ void shufl(uint WG, local T *lds, T2 *u, uint n, uint f) {
   }
 }
 
-void tabMul(uint WG, const T2 *trig, T2 *u, uint n, uint f) {
+void tabMul(uint WG, const global T2 *trig, T2 *u, uint n, uint f) {
   uint me = get_local_id(0);
   for (int i = 1; i < n; ++i) { u[i] = mul(u[i], trig[me / f + i * (WG / f)]); }
 }
 
-void shuflAndMul(uint WG, local T *lds, const T2 *trig, T2 *u, uint n, uint f) {
+void shuflAndMul(uint WG, local T *lds, const global T2 *trig, T2 *u, uint n, uint f) {
 #if 0
   uint me = get_local_id(0);
   uint m = me / f;
@@ -301,14 +301,14 @@ void shuflAndMul(uint WG, local T *lds, const T2 *trig, T2 *u, uint n, uint f) {
 }
 
 // 8x8
-void fft64(local T *lds, T2 *u, const T2 *trig) {
+void fft64(local T *lds, T2 *u, const global T2 *trig) {
   fft8(u);
   shuflAndMul(8, lds, trig, u, 8, 1);
   fft8(u);
 }
 
 // 64x4
-void fft256(local T *lds, T2 *u, const T2 *trig) {
+void fft256(local T *lds, T2 *u, const global T2 *trig) {
   for (int s = 4; s >= 0; s -= 2) {
     fft4(u);
     shuflAndMul(64, lds, trig, u, 4, 1 << s);
@@ -317,7 +317,7 @@ void fft256(local T *lds, T2 *u, const T2 *trig) {
 }
 
 // 64x8
-void fft512(local T *lds, T2 *u, const T2 *trig) {
+void fft512(local T *lds, T2 *u, const global T2 *trig) {
   for (int s = 3; s >= 0; s -= 3) {
     fft8(u);
     shuflAndMul(64, lds, trig, u, 8, 1 << s);
@@ -326,7 +326,7 @@ void fft512(local T *lds, T2 *u, const T2 *trig) {
 }
 
 // 256x4
-void fft1K(local T *lds, T2 *u, const T2 *trig) {
+void fft1K(local T *lds, T2 *u, const global T2 *trig) {
   for (int s = 6; s >= 0; s -= 2) {
     fft4(u);
     shuflAndMul(256, lds, trig, u, 4, 1 << s);
@@ -335,7 +335,7 @@ void fft1K(local T *lds, T2 *u, const T2 *trig) {
 }
 
 // 512x8
-void fft4K(local T *lds, T2 *u, const T2 *trig) {
+void fft4K(local T *lds, T2 *u, const global T2 *trig) {
   for (int s = 6; s >= 0; s -= 3) {
     fft8(u);
     shuflAndMul(512, lds, trig, u, 8, 1 << s);
@@ -344,7 +344,7 @@ void fft4K(local T *lds, T2 *u, const T2 *trig) {
 }
 
 // 256x8
-void fft2K(local T *lds, T2 *u, const T2 *trig) {
+void fft2K(local T *lds, T2 *u, const global T2 *trig) {
   for (int s = 5; s >= 2; s -= 3) {
     fft8(u);
     shuflAndMul(256, lds, trig, u, 8, 1 << s);
@@ -378,11 +378,11 @@ void fft2K(local T *lds, T2 *u, const T2 *trig) {
   SWAP(u[3], u[6]);
 }
 
-void read(uint WG, uint N, T2 *u, const T2 *in, uint base) {
+void read(uint WG, uint N, T2 *u, const global T2 *in, uint base) {
   for (int i = 0; i < N; ++i) { u[i] = in[base + i * WG + (uint) get_local_id(0)]; }
 }
 
-void write(uint WG, uint N, T2 *u, T2 *out, uint base) {
+void write(uint WG, uint N, T2 *u, global T2 *out, uint base) {
   for (int i = 0; i < N; ++i) { out[base + i * WG + (uint) get_local_id(0)] = u[i]; }
 }
 
@@ -663,7 +663,7 @@ KERNEL(256) fftMiddleOut(P(T2) io) {
 
 // Carry propagation with optional MUL-3, over CARRY_LEN words.
 // Input is conjugated and inverse-weighted.
-void carryACore(uint mul, const T2 *in, const T2 *A, Word2 *out, Carry *carryOut) {
+void carryACore(uint mul, const global T2 *in, const global T2 *A, global Word2 *out, global Carry *carryOut) {
   uint g  = get_group_id(0);
   uint me = get_local_id(0);
   uint gx = g % NW;
@@ -785,6 +785,63 @@ KERNEL(G_W) carryFused(P(T2) io, P(Carry) carryShuttle, P(uint) ready,
   write(G_W, NW, u, io, 0);
 }
 
+// copy of carryFused() above, with the only difference the mul-by-3 in unweightAndCarry().
+KERNEL(G_W) carryFusedMul(P(T2) io, P(Carry) carryShuttle, P(uint) ready,
+                       CP(T2) A, CP(T2) iA, Trig smallTrig) {
+  local T lds[WIDTH];
+
+  uint gr = get_group_id(0);
+  uint me = get_local_id(0);
+  
+  uint H = BIG_HEIGHT;
+  uint line = gr % H;
+  uint step = WIDTH * line;
+  io += step;
+  A  += step;
+  iA += step;
+  
+  T2 u[NW];
+  Word2 wu[NW];
+  
+  read(G_W, NW, u, io, 0);
+
+  fft_WIDTH(lds, u, smallTrig);
+  
+  for (int i = 0; i < NW; ++i) {
+    uint p = i * G_W + me;
+    Carry carry = 0;    
+    wu[i] = unweightAndCarry(3,   conjugate(u[i]), &carry, iA[p]);
+    if (gr < H) { carryShuttle[gr * WIDTH + p] = carry; }
+  }
+
+  release();
+  
+  // Signal that this group is done writing the carry.
+  if (gr < H && me == 0) {
+    atomic_store_explicit((atomic_uint *) &ready[gr], 1, memory_order_release, memory_scope_device); 
+  }
+
+  if (gr == 0) { return; }
+    
+  // Wait until the previous group is ready with the carry.
+  if (me == 0) {
+    while(!atomic_load_explicit((atomic_uint *) &ready[gr - 1], memory_order_acquire, memory_scope_device));
+    ready[gr - 1] = 0;
+  }
+
+  acquire();
+  
+  for (int i = 0; i < NW; ++i) {
+    uint p = i * G_W + me;
+    Carry carry = carryShuttle[(gr - 1) * WIDTH + ((p + WIDTH - gr / H) % WIDTH)];
+    u[i] = carryAndWeightFinal(wu[i], carry, A[p]);
+  }
+
+  fft_WIDTH(lds, u, smallTrig);
+
+  write(G_W, NW, u, io, 0);
+}
+
 KERNEL(256) transposeW(CP(T2) in, P(T2) out) {
   local T lds[4096];
   transpose(WIDTH, BIG_HEIGHT, lds, in, out);
@@ -807,7 +864,6 @@ KERNEL(256) transposeIn(CP(Word2) in, P(Word2) out) {
   transposeWords(BIG_HEIGHT, WIDTH, lds, in, out);
 }
 
-#if 0 //unused
 KERNEL(SMALL_HEIGHT / 2 / 4) square(P(T2) io) {
   uint W = SMALL_HEIGHT;
   uint H = ND / W;
@@ -844,7 +900,6 @@ KERNEL(SMALL_HEIGHT / 2 / 4) square(P(T2) io) {
     }
   }
 }
-#endif
 
 KERNEL(SMALL_HEIGHT / 2) multiply(P(T2) io, CP(T2) in) {
   uint W = SMALL_HEIGHT;
@@ -873,6 +928,48 @@ KERNEL(SMALL_HEIGHT / 2) multiply(P(T2) io, CP(T2) in) {
 
   T2 c = in[k];
   T2 d = conjugate(in[v]);
+  X2(c, d);
+  d = mul(d, conjugate(t));
+  X2(c, d);
+
+  a = mul(a, c);
+  b = mul(b, d);
+
+  X2(a, b);
+  b = mul(b, t);
+  X2(a, b);
+
+  io[k] = conjugate(a);
+  io[v] = b;
+}
+
+KERNEL(SMALL_HEIGHT / 2) multiplySub(P(T2) io, CP(T2) in, CP(T2) delta) {
+  uint W = SMALL_HEIGHT;
+  uint H = ND / W;
+  
+  uint line1 = get_group_id(0);
+  uint me = get_local_id(0);
+
+  if (line1 == 0 && me == 0) {
+    io[0]     = shl(conjugate(foo2(io[0], in[0] - delta[0])), 2);
+    io[W / 2] = shl(conjugate(mul(io[W / 2], in[W / 2] - delta[W / 2])), 3);
+    return;
+  }
+
+  uint line2 = (H - line1) % H;
+  uint g1 = transPos(line1, MIDDLE, WIDTH);
+  uint g2 = transPos(line2, MIDDLE, WIDTH);
+  uint k = g1 * W + me;
+  uint v = g2 * W + (W - 1) - me + (line1 == 0);
+  T2 a = io[k];
+  T2 b = conjugate(io[v]);
+  T2 t = swap(slowTrig(me * H + line1, W * H));
+  X2(a, b);
+  b = mul(b, conjugate(t));
+  X2(a, b);
+
+  T2 c = in[k] - delta[k];
+  T2 d = conjugate(in[v] - delta[v]);
   X2(c, d);
   d = mul(d, conjugate(t));
   X2(c, d);

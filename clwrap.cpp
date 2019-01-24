@@ -8,6 +8,8 @@
 #include <cstdarg>
 #include <cassert>
 #include <string>
+#include <new>
+#include <memory>
 
 using namespace std;
 
@@ -58,6 +60,12 @@ void getInfo(cl_device_id id, int what, size_t bufSize, void *buf) { CHECK(clGet
 
 bool getInfoMaybe(cl_device_id id, int what, size_t bufSize, void *buf) {
   return clGetDeviceInfo(id, what, bufSize, buf, NULL) == CL_SUCCESS;
+}
+
+u32 getFreeMemory(cl_device_id id) {
+  u64 memSize = 0;
+  getInfo(id, CL_DEVICE_GLOBAL_FREE_MEMORY_AMD, sizeof(memSize), &memSize);
+  return memSize;
 }
 
 static string getTopology(cl_device_id id) {
@@ -116,14 +124,22 @@ vector<cl_device_id> toDeviceIds(const vector<u32> &devices) {
   return ids;
 }
 
-cl_context createContext(const vector<u32> &devices) {  
+Context createContext(const vector<u32> &devices) {  
   assert(devices.size() > 0);
   auto ids = toDeviceIds(devices);
   int err;
-  cl_context context = clCreateContext(NULL, ids.size(), ids.data(), NULL, NULL, &err);
+  Context context(clCreateContext(NULL, ids.size(), ids.data(), NULL, NULL, &err));
   CHECK2(err, "clCreateContext");
-  return context;
+  return move(context);
 }
+
+Context createContext(cl_device_id id) {  
+  int err;
+  Context context(clCreateContext(NULL, 1, &id, NULL, NULL, &err));
+  CHECK2(err, "clCreateContext");
+  return move(context);
+}
+
 
 void release(cl_context context) { CHECK(clReleaseContext(context)); }
 void release(cl_program program) { CHECK(clReleaseProgram(program)); }
@@ -208,18 +224,19 @@ static bool build(cl_program program, const vector<cl_device_id> &devices, const
 }
 
 cl_program compile(const vector<cl_device_id> &devices, cl_context context, const string &name, const string &extraArgs,
-                   const vector<pair<string, unsigned>> &defines, bool usePrecompiled) {
+                   const vector<pair<string, unsigned>> &defines) {
   string strDefines;
   string config;
   for (auto d : defines) {
     strDefines = strDefines + "-D" + d.first + "=" + to_string(d.second) + "u ";
     config = config + "_" + to_string(d.second);
   }
-  string args = strDefines + extraArgs + " " + "-I. -cl-fast-relaxed-math -cl-std=CL2.0 ";
+  string args = strDefines + extraArgs + " " + "-I. -cl-fast-relaxed-math -cl-std=CL2.0";
 
   cl_program program = 0;
 
   string binFile = string("precompiled/") + getHwName(devices.front()) + "_" + name + config + ".so";
+  const bool usePrecompiled = false;
   if (usePrecompiled && (program = loadBinary(devices.front(), context, binFile))) {
     if (build(program, devices, args)) {
       return program;
@@ -258,6 +275,7 @@ void setArg(cl_kernel k, int pos, const Buffer &buf) { setArg(k, pos, buf.get())
 cl_mem makeBuf(cl_context context, unsigned kind, size_t size, const void *ptr) {
   int err;
   cl_mem buf = clCreateBuffer(context, kind, size, (void *) ptr, &err);
+  if (err == CL_OUT_OF_RESOURCES || err == CL_MEM_OBJECT_ALLOCATION_FAILURE) { throw bad_alloc{}; }  
   CHECK2(err, "clCreateBuffer");
   return buf;
 }
@@ -324,4 +342,27 @@ void Queue::zero(Buffer &buf, size_t size) {
   int zero = 0;
   CHECK(clEnqueueFillBuffer(queue.get(), buf.get(), &zero, sizeof(zero), 0, size, 0, 0, 0));
   // finish();
+}
+
+u32 getAllocableBlocks(cl_device_id device, u32 blockSizeBytes) {
+  assert(blockSizeBytes % 1024 == 0);
+  vector<Buffer> buffers;
+
+  // auto hostBuf = make_unique<u32[]>(blockSizeBytes);
+
+  Context context = createContext(device);
+  
+  u32 freeKB = getFreeMemory(device);
+
+  while (true) {
+    try {
+      buffers.emplace_back(makeBuf(context, BUF_RW, blockSizeBytes/*, hostBuf.get()*/));
+      u32 newFreeKB = getFreeMemory(device);
+      if (newFreeKB == freeKB) { break; }
+      freeKB = newFreeKB;
+    } catch (const bad_alloc&) {
+      break;
+    }
+  }
+  return buffers.size();
 }

@@ -3,6 +3,7 @@
 #include "args.h"
 #include "file.h"
 #include "clwrap.h"
+#include "FFTConfig.h"
 
 #include <vector>
 #include <cstring>
@@ -21,38 +22,45 @@ Command line options:
 -fft <size>        : specify FFT size, such as: 5000K, 4M, +2, -1.
 -block <value>     : PRP GEC block size. Default 400. Smaller block is slower but detects errors sooner.
 -carry long|short  : force carry type. Short carry may be faster, but requires high bits/word.
--list fft          : display a list of available FFT configurations.
--tf <bit-offset>   : enable auto trial factoring before PRP. Pass 0 to bit-offset for default TF depth.
+-D <value>         : P-1 second-stage D block size; multiple of 210; default auto based on GPU available memory.
 -device <N>        : select a specific device:
 )");
 
       vector<cl_device_id> deviceIds = getDeviceIDs();
-      for (auto id : deviceIds) { printf("%s\n", getLongInfo(id).c_str()); }
+      for (unsigned i = 0; i < deviceIds.size(); ++i) { printf("%2u : %s\n", i, getLongInfo(deviceIds[i]).c_str()); }
+      printf("\nFFT Configurations:\n");
       
+      vector<FFTConfig> configs = FFTConfig::genConfigs();
+      configs.push_back(FFTConfig{}); // dummy guard for the loop below.
+      string variants;
+      u32 activeSize = 0;
+      for (auto c : configs) {
+        if (c.fftSize != activeSize) {
+          if (!variants.empty()) {
+            printf("FFT %5s [%6.2fM - %7.2fM] %s\n",
+                numberK(activeSize).c_str(),
+                activeSize * 1.5 / 1'000'000, FFTConfig::getMaxExp(activeSize) / 1'000'000.0,
+                variants.c_str());
+            variants.clear();
+          }
+        }
+        activeSize = c.fftSize;
+        variants += " "s + FFTConfig::configName(c.width, c.height, c.middle);
+      }
       return false;
-    } else if (!strcmp(arg, "-list")) {
-      if (i < argc - 1 && !strcmp(argv[++i], "fft")) {
-        listFFT = true;
+    } else if (!strcmp(arg, "-D")) {
+      if (i < argc - 1) {
+        D = atoi(argv[++i]);
+        assert(D >= 210 && D % 210 == 0);
       } else {
-        log("-list expects \"fft\"\n");
-        return false;
-      }              
-    } else if (!strcmp(arg, "-precompiled")) {
-      usePrecompiled = true;
+        log("-D expects <value>\n");
+      }
     } else if (!strcmp(arg, "-fft")) {
       if (i < argc - 1) {
         string s = argv[++i];
-        fftSize = atoi(s.c_str()) * ((s.back() == 'K') ? 1024 : ((s.back() == 'M') ? 1024 * 1024 : 1));
+        fftSize = stoi(s) * ((s.back() == 'K') ? 1024 : ((s.back() == 'M') ? 1024 * 1024 : 1));
       } else {
         log("-fft expects <size>\n");
-        return false;
-      }
-    } else if (!strcmp(arg, "-tf")) {
-      if (i < argc - 1) {
-        tfDelta = atoi(argv[++i]);
-        enableTF = true;
-      } else {
-        log("-tf expects <bit-offset>\n");
         return false;
       }
     } else if (!strcmp(arg, "-dump")) {

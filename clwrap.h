@@ -13,7 +13,7 @@
 typedef cl_command_queue cl_queue;
 
 template<typename T>
-struct ReleaseDelete {
+struct Releaser {
   using pointer = T;
   
   void operator()(T t) {
@@ -22,15 +22,13 @@ struct ReleaseDelete {
   }
 };
 
-template<typename T> using Holder = std::unique_ptr<T, ReleaseDelete<T> >;
+template<typename T> using Holder = std::unique_ptr<T, Releaser<T> >;
 
 using Buffer  = Holder<cl_mem>;
 using Context = Holder<cl_context>;
 using QueueHolder = Holder<cl_queue>;
 
 static_assert(sizeof(Buffer) == sizeof(cl_mem), "size Buffer");
-
-// using SVM
 
 const unsigned BUF_CONST = CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS;
 const unsigned BUF_RW    = CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS;
@@ -44,14 +42,18 @@ vector<cl_device_id> getDeviceIDs(bool onlyGPU = false);
 string getHwName(cl_device_id id);
 string getShortInfo(cl_device_id device);
 string getLongInfo(cl_device_id device);
-cl_context createContext(const vector<u32> &devices);
+u32 getFreeMemory(cl_device_id id);
+
+Context createContext(const vector<u32> &devices);
+Context createContext(cl_device_id id);
+
 void release(cl_context context);
 void release(cl_program program);
 void release(cl_mem buf);
 void release(cl_queue queue);
 void release(cl_kernel k);
 cl_program compile(const std::vector<cl_device_id> &devices, cl_context context, const string &name, const string &extraArgs,
-                   const vector<pair<string, unsigned>> &defines, bool usePrecompiled);
+                   const vector<pair<string, unsigned>> &defines);
 cl_kernel makeKernel(cl_program program, const char *name);
 
 template<typename T>
@@ -116,3 +118,6 @@ public:
 };
 
 cl_device_id getDevice(int argsDevId);
+
+// How many blocks of given size can be allocated on the device.
+u32 getAllocableBlocks(cl_device_id device, u32 blockSizeBytes);

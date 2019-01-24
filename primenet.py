@@ -5,6 +5,8 @@
 
 import argparse
 import time
+import urllib
+
 from http import cookiejar
 from urllib.parse import urlencode
 from urllib.request import build_opener
@@ -65,15 +67,23 @@ def fetch(what):
     print("New assignment: ", line)
     return line
 
+workTypes = dict(PRP_FIRST=150, PRP_DC=151, PRP_WORLD_RECORD=152, PRP_100M=153, PF=4, PM1=4)
+
 parser = argparse.ArgumentParser()
 parser.add_argument('-u', dest='username', default='', help="Primenet user name")
 parser.add_argument('-p', dest='password', help="Primenet password")
 parser.add_argument('-t', dest='timeout',  type=int, default=7200, help="Seconds to sleep between updates")
 parser.add_argument('--dirs', metavar='DIR', nargs='+', help="GpuOwl directories to scan", default=".")
 
+choices=list(workTypes.keys()) + list(map(str, set(workTypes.values())))
+parser.add_argument('-w', dest='work', choices=choices, help="GIMPS work type")
+
 options = parser.parse_args()
 timeout = int(options.timeout)
 user = options.username
+
+worktype = workTypes[options.work] if options.work in workTypes else int(options.work)
+print("Work type:", worktype)
 
 if not user:
     print("-u USER is required")
@@ -92,9 +102,6 @@ if not password:
 # Initial early login, to display any login errors early
 login(user, password)
 
-PRP_FIRST_TIME = 150
-PRP_DC = 151
-
 sents = [loadLines(d + "sent.txt") for d in dirs]
 
 def handle(folder, sent):
@@ -110,9 +117,13 @@ def handle(folder, sent):
     if newResults or needFetch:
         login(user, password)
         if newResults: sendResults(newResults, sent, sentName, retryName)
-        if needFetch: appendLine(worktodoName, fetch(PRP_FIRST_TIME))
+        if needFetch: appendLine(worktodoName, fetch(worktype))
     
 
 while True:
-    for (folder, sent) in zip(dirs, sents): handle(folder, sent)
+    for (folder, sent) in zip(dirs, sents):
+        try:
+            handle(folder, sent)
+        except urllib.error.URLError as e:
+            print(e)
     time.sleep(timeout)
