@@ -1,14 +1,17 @@
+// GpuOwL, a Mersenne primality tester. Copyright (C) Mihai Preda.
+
 #include "worktodo.h"
 
 #include "Task.h"
 #include "file.h"
 #include "common.h"
+#include "Args.h"
 
 #include <cassert>
 #include <string>
 #include <cstring>
 
-Task Worktodo::getTask() {
+Task Worktodo::getTask(Args &args) {
   if (auto fi{openRead("worktodo.txt", true)}) {
     char line[512];
     while (fgets(line, sizeof(line), fi.get())) {
@@ -33,8 +36,8 @@ Task Worktodo::getTask() {
         tail = line + pos;
       }
 
-      if (B1 == 0) { B1 = 1000000; } // default B1
-      if (B2 == 0) { B2 = 30 * B1; } // default B2 given B1.
+      if (B1 == 0) { B1 = args.B1; }
+      if (B2 == 0) { B2 = B1 * args.B2_B1_ratio; }
       
       if (sscanf(tail, "PFactor=N/A,1,2,%u,-1,%u", &exp, &bitLo) == 2 ||
           sscanf(tail, "PFactor=%32[0-9a-fA-F],1,2,%u,-1,%u", outAID, &exp, &bitLo) == 3) {
@@ -44,8 +47,8 @@ Task Worktodo::getTask() {
       if (sscanf(tail, "PFactor=%u", &exp) == 1) { return Task{Task::PM1, exp, "", line, B1, B2}; }
       
       int n = strlen(line);
-      if (n >= 2 && line[n - 2] == '\n') { line[n - 2] = 0; }
-      if (n >= 1 && line[n - 1] == '\n') { line[n - 1] = 0; }
+      if (n >= 2 && (line[n - 2] == '\n' || line[n - 2] == '\r')) { line[n - 2] = 0; }
+      if (n >= 1 && (line[n - 1] == '\n' || line[n - 1] == '\r')) { line[n - 1] = 0; }
       log("worktodo.txt: \"%s\" ignored\n", line);
     }
   }

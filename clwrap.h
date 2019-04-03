@@ -42,9 +42,11 @@ vector<cl_device_id> getDeviceIDs(bool onlyGPU = false);
 string getHwName(cl_device_id id);
 string getShortInfo(cl_device_id device);
 string getLongInfo(cl_device_id device);
-u32 getFreeMemory(cl_device_id id);
 
-Context createContext(const vector<u32> &devices);
+// Get GPU free memory in bytes.
+u64 getFreeMem(cl_device_id id);
+
+Context createContext(int device);
 Context createContext(cl_device_id id);
 
 void release(cl_context context);
@@ -82,6 +84,7 @@ void read(cl_queue queue, bool blocking, Buffer &buf, size_t size, void *data, s
 void write(cl_queue queue, bool blocking, cl_mem buf, size_t size, const void *data, size_t start = 0);
 void write(cl_queue queue, bool blocking, Buffer &buf, size_t size, const void *data, size_t start = 0);
 void copyBuf(cl_queue queue, Buffer &src, Buffer &dst, size_t size);
+void fillBuf(cl_queue q, Buffer &buf, void *pat, size_t patSize, size_t size = 0, size_t start = 0);
 int getKernelNumArgs(cl_kernel k);
 int getWorkGroupSize(cl_kernel k, cl_device_id device, const char *name);
 std::string getKernelArgName(cl_kernel k, int pos);
@@ -120,4 +123,4 @@ public:
 cl_device_id getDevice(int argsDevId);
 
 // How many blocks of given size can be allocated on the device.
-u32 getAllocableBlocks(cl_device_id device, u32 blockSizeBytes);
+u32 getAllocableBlocks(cl_device_id device, u32 blockSize, u32 minFree = 400 * 1024 * 1024);

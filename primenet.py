@@ -11,6 +11,7 @@ from http import cookiejar
 from urllib.parse import urlencode
 from urllib.request import build_opener
 from urllib.request import HTTPCookieProcessor
+from datetime import datetime
 
 baseUrl = "https://www.mersenne.org/"
 primenet = build_opener(HTTPCookieProcessor(cookiejar.CookieJar()))
@@ -64,19 +65,20 @@ def fetch(what):
     end   = res.find("<!--END_ASSIGNMENTS_BLOCK-->", begin)
     if end == -1: raise(AssertionError("assignemnt no END mark"))
     line = res[begin:end].strip().strip('\n')
-    print("New assignment: ", line)
+    print(datetime.now(), " New assignment: ", line)
     return line
 
-workTypes = dict(PRP_FIRST=150, PRP_DC=151, PRP_WORLD_RECORD=152, PRP_100M=153, PF=4, PM1=4)
+workTypes = dict(PRP=150, PRP_FIRST=150, PRP_DC=151, PRP_WORLD_RECORD=152, PRP_100M=153, PF=4, PM1=4)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-u', dest='username', default='', help="Primenet user name")
 parser.add_argument('-p', dest='password', help="Primenet password")
-parser.add_argument('-t', dest='timeout',  type=int, default=7200, help="Seconds to sleep between updates")
+parser.add_argument('-t', dest='timeout',  type=int, default=3600, help="Seconds to sleep between updates")
 parser.add_argument('--dirs', metavar='DIR', nargs='+', help="GpuOwl directories to scan", default=".")
+parser.add_argument('--tasks', dest='nTasks', type=int, default=None, help='Number of tasks to fetch ahead')
 
-choices=list(workTypes.keys()) + list(map(str, set(workTypes.values())))
-parser.add_argument('-w', dest='work', choices=choices, help="GIMPS work type")
+choices=list(workTypes.keys()) + sorted(list(set(map(str, set(workTypes.values())))))
+parser.add_argument('-w', dest='work', choices=choices, help="GIMPS work type", default="PRP")
 
 options = parser.parse_args()
 timeout = int(options.timeout)
@@ -84,6 +86,9 @@ user = options.username
 
 worktype = workTypes[options.work] if options.work in workTypes else int(options.work)
 print("Work type:", worktype)
+
+desiredTasks = options.nTasks if options.nTasks is not None else (12 if worktype == 4 else 2)
+print("Will fetch ahead %d tasks" % desiredTasks)
 
 if not user:
     print("-u USER is required")
@@ -108,16 +113,17 @@ def handle(folder, sent):
     (resultsName, worktodoName, sentName, retryName) = (folder + name + ".txt" for name in "results worktodo sent retry".split())
     
     newResults = loadLines(resultsName) - sent
-    if newResults: print("found %d new result(s) in %s" % (len(newResults), resultsName))
+    if newResults: print(datetime.now(), " found %d new result(s) in %s" % (len(newResults), resultsName))
     
     tasks = [line for line in loadLines(worktodoName) if line and line[0] != '#']
-    needFetch = len(tasks) < 2
-    if needFetch: print("found only %d task(s) in %s" % (len(tasks), worktodoName));
+    needFetch = len(tasks) < desiredTasks
+    if needFetch: print(datetime.now(), " found only %d task(s) in %s, want %d" % (len(tasks), worktodoName, desiredTasks));
     
     if newResults or needFetch:
         login(user, password)
         if newResults: sendResults(newResults, sent, sentName, retryName)
-        if needFetch: appendLine(worktodoName, fetch(worktype))
+        for _ in range(len(tasks), desiredTasks):
+            appendLine(worktodoName, fetch(worktype))
     
 
 while True:

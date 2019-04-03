@@ -19,13 +19,14 @@ public:
   std::string cpu;
   std::string dump;
   
-  std::vector<u32> devices;
+  int device = -1;
   bool timeKernels = false;
   int carry = CARRY_AUTO;
   u32 blockSize = 400;
   int fftSize = 0;
   bool enableTF = false;
-  u32 D = 0; // P-1 D (number of blocks)
+  u32 B1 = 500000;
+  u32 B2_B1_ratio = 30;
   
   // return false to stop.
   bool parse(int argc, char **argv);

@@ -62,10 +62,10 @@ bool getInfoMaybe(cl_device_id id, int what, size_t bufSize, void *buf) {
   return clGetDeviceInfo(id, what, bufSize, buf, NULL) == CL_SUCCESS;
 }
 
-u32 getFreeMemory(cl_device_id id) {
+u64 getFreeMem(cl_device_id id) {
   u64 memSize = 0;
   getInfo(id, CL_DEVICE_GLOBAL_FREE_MEMORY_AMD, sizeof(memSize), &memSize);
-  return memSize;
+  return memSize * 1024; // KB to Bytes.
 }
 
 static string getTopology(cl_device_id id) {
@@ -111,7 +111,7 @@ cl_device_id getDevice(int argsDevId) {
     auto devices = getDeviceIDs(true);
     if (devices.empty()) {
       log("No GPU device found. See -h for how to select a specific device.\n");
-      return 0;
+      throw("No device specified, and no GPU device found");
     }
     device = devices[0];
   }
@@ -124,13 +124,8 @@ vector<cl_device_id> toDeviceIds(const vector<u32> &devices) {
   return ids;
 }
 
-Context createContext(const vector<u32> &devices) {  
-  assert(devices.size() > 0);
-  auto ids = toDeviceIds(devices);
-  int err;
-  Context context(clCreateContext(NULL, ids.size(), ids.data(), NULL, NULL, &err));
-  CHECK2(err, "clCreateContext");
-  return move(context);
+Context createContext(int device) {  
+  return createContext(getDevice(device));
 }
 
 Context createContext(cl_device_id id) {  
@@ -340,29 +335,26 @@ std::string getKernelArgName(cl_kernel k, int pos) {
 void Queue::zero(Buffer &buf, size_t size) {
   assert(size % sizeof(int) == 0);
   int zero = 0;
-  CHECK(clEnqueueFillBuffer(queue.get(), buf.get(), &zero, sizeof(zero), 0, size, 0, 0, 0));
+  fillBuf(queue.get(), buf, &zero, sizeof(zero), size);
+  // CHECK(clEnqueueFillBuffer(queue.get(), buf.get(), &zero, sizeof(zero), 0, size, 0, 0, 0));
   // finish();
 }
 
-u32 getAllocableBlocks(cl_device_id device, u32 blockSizeBytes) {
-  assert(blockSizeBytes % 1024 == 0);
-  vector<Buffer> buffers;
+void fillBuf(cl_queue q, Buffer &buf, void *pat, size_t patSize, size_t size, size_t start) {
+  CHECK(clEnqueueFillBuffer(q, buf.get(), pat, patSize, start, size ? size : patSize, 0, 0, 0));
+}
 
-  // auto hostBuf = make_unique<u32[]>(blockSizeBytes);
+u32 getAllocableBlocks(cl_device_id device, u32 blockSize, u32 minFree) {
+  vector<Buffer> buffers;
 
   Context context = createContext(device);
   
-  u32 freeKB = getFreeMemory(device);
-
-  while (true) {
+  while (getFreeMem(device) >= minFree) {
     try {
-      buffers.emplace_back(makeBuf(context, BUF_RW, blockSizeBytes/*, hostBuf.get()*/));
-      u32 newFreeKB = getFreeMemory(device);
-      if (newFreeKB == freeKB) { break; }
-      freeKB = newFreeKB;
+      buffers.emplace_back(makeBuf(context, BUF_RW, blockSize));
     } catch (const bad_alloc&) {
       break;
     }
   }
-  return buffers.size();
+  return buffers.empty() ? 0 : (buffers.size() - 1);
 }
