@@ -1,13 +1,17 @@
 // Copyright 2017 Mihai Preda.
 
-#include "common.h"
-#include <vector>
-
 #pragma once
 
-vector<u32> compactBits(const vector<int> &dataVect, int E);
-vector<int> expandBits(const vector<u32> &compactBits, int N, int E);
-u64 residueFromRaw(u32 E, u32 N, const vector<int> &words);
+#include "common.h"
+#include <vector>
+#include <cmath>
+#include <cassert>
+#include <cfenv>
 
-// Sets the weighting vectors direct A and inverse iA (as per IBDWT).
-pair<vector<double>, vector<double>> genWeights(int E, int W, int H);
+vector<u32> compactBits(const vector<int> &dataVect, u32 E);
+vector<int> expandBits(const vector<u32> &compactBits, u32 N, u32 E);
+u64 residueFromRaw(u32 N, u32 E, const vector<int> &words);
+
+constexpr u32 step(u32 N, u32 E) { return N - (E % N); }
+constexpr u32 extra(u32 N, u32 E, u32 k) { return u64(step(N, E)) * k % N; }
+constexpr bool isBigWord(u32 N, u32 E, u32 k) { return extra(N, E, k) + step(N, E) < N; }

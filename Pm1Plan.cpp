@@ -13,11 +13,14 @@
 
 using namespace std;
 
-static constexpr const u32 D = 30030; // 2*3*5*7*11*13
+static constexpr const u32 D = 30030;
+static_assert(D == 2*3*5*7*11*13);
+static constexpr const u32 J = 2880;
+static_assert(J == 1*2*4*6*10*12 / 2);
 
 // Simple Erathostene's sieve.
 static vector<bool> primeBits(u32 B1, u32 B2) {
-  assert(B1 > 0 && B1 < B2);
+  assert(B1 < B2);
 
   vector<bool> bits(B2 + 1);
   bits[0] = bits[1] = true;
@@ -32,19 +35,6 @@ static vector<bool> primeBits(u32 B1, u32 B2) {
   }
   bits.flip();
   return bits;
-}
-
-// u32 adjustBound(u32 B) { return (B + D / 2) / D * D + D / 2; }
-
-bool isRelPrime(u32 j) { return j % 2 && j % 3 && j % 5 && j % 7 && j % 11 && j % 13; }
-
-// JSet : the values 1 <= x < D/2 where GCD(x, D) == 1
-vector<u32> getJset() {
-  // assert((D >= 2310 && D % 2310 == 0) || (D % 210 == 0));
-
-  vector<u32> jset; // !!30030
-  for (u32 j = 1; j < D / 2; j += 2) { if (isRelPrime(j)) { jset.push_back(j); }}
-  return jset;
 }
 
 // 'value' is a small multiple of a prime: B1 < prime <= B2. Return that prime.
@@ -65,12 +55,11 @@ class PrimeBits {
 public:
   vector<bool> bits;
   u32 B1, B2;
-  using list_u32 = initializer_list<u32>;
 
 public:
   PrimeBits(u32 B1, u32 B2) : bits(primeBits(B1, B2)), B1(B1), B2(B2) {}
   
-  void expand() { for (u32 p = B1 + 1; p <= B2 / 11; ++p) { if (bits[p]) { set(p, true); }}}
+  void expand() { for (u32 p = B1 + 1; p <= B2 / 17; ++p) { if (bits[p]) { set(p, true); }}}
 
   void set(u32 value, bool what) {
     assert(value <= B2 && bits[value]);
@@ -85,22 +74,22 @@ public:
   }
 
   template<typename T>
-  vector<bitset<2880>> select(const T &cond) {
+  vector<bitset<J>> select(const T &cond) {
     u32 beginBlock = blockFor(B1);
-    u32 endBlock   = blockFor(B2) + 1;
-    vector<u32> jset = getJset();
+    u32 endBlock   = blockFor(B2 - 1) + 1;
+    auto jset = getJset();
 
-    vector<bitset<2880>> ret;
+    vector<bitset<J>> ret;
 
     for (u32 block = beginBlock; block < endBlock; ++block) {
-      bitset<2880> blockBits;
+      bitset<J> blockBits;
       u32 pos = 0;
       for (u32 j : jset) {
         assert(j >= 1 && j < D / 2);
         u32 a = block * D + j;
         u32 b = block * D - j;
         bool onA = a <= B2 && bits[a];
-        bool onB = b <= B2 && b > 0 && bits[b];
+        bool onB = b <= B2 && bits[b];
         if (cond(onA, onB)) {
           blockBits[pos] = true;
           if (onA) { set(a, false); }
@@ -130,6 +119,12 @@ static u32 countSum(const vector<bitset<2880>>& v) {
 }
 
 tuple<u32, u32, vector<bitset<2880>>> makePm1Plan(u32 B1, u32 B2) {
+  // poor man's cache
+  static u32 cacheB1 = 0, cacheB2 = 0;
+  static tuple<u32, u32, vector<bitset<2880>>> cachePlan;
+
+  if (B1 == cacheB1 && B2 == cacheB2) { return cachePlan; }
+  
   PrimeBits bits(B1, B2);
   u32 nPrimes = bits.size();
   bits.expand();
@@ -156,5 +151,8 @@ tuple<u32, u32, vector<bitset<2880>>> makePm1Plan(u32 B1, u32 B2) {
 
   u32 beginBlock = blockFor(B1);
 
-  return {beginBlock, total, selected};
+  cachePlan = {beginBlock, total, selected};
+  cacheB1 = B1;
+  cacheB2 = B2;
+  return cachePlan;
 };

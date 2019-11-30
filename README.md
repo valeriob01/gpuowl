@@ -106,6 +106,7 @@ To build simply invoke "make" (or look inside the Makefile for a manual build).
 Simply start GpuOwl with any valid exponent, and the built-in error checking kicks in, validating the computation. If you start seeing output lines with "OK", than it's working correctly. "EE" lines indicate computation errors.
 
 ## Command-line Arguments
+-dir \<folder\>      : specify work directory (containing worktodo.txt, results.txt, config.txt, gpuowl.log)\
 -user \<name\>       : specify the user name.\
 -cpu  \<name\>       : specify the hardware name.\
 -time              : display kernel profiling information.\
@@ -113,8 +114,24 @@ Simply start GpuOwl with any valid exponent, and the built-in error checking kic
 -block \<value\>     : PRP GEC block size. Default 400. Smaller block is slower but detects errors sooner.\
 -carry long|short  : force carry type. Short carry may be faster, but requires high bits/word.\
 -B1                : P-1 B1, default 500000\
+-B2                : P-1 B2 bound, default B1 * 30\
 -rB2               : ratio of B2 to B1, default 30\
+-prp \<exponent\>    : run a single PRP test and exit, ignoring worktodo.txt\
+-pm1 \<exponent\>    : run a single P-1 test and exit, ignoring worktodo.txt\
+-results \<file\>    : name of results file, default 'results.txt'\
+-iters \<N\>         : run next PRP test for \<N\> iterations and exit. Multiple of 10000.\
+-maxAlloc          : limit GPU memory usage to this value in MB (needed on non-AMD GPUs)\
+-yield             : enable work-around for CUDA busy wait taking up one CPU core\
+-use NEW_FFT8,OLD_FFT5,NEW_FFT10: comma separated list of defines, see the #if tests in gpuowl.cl (used for perf tuning).\
 -device \<N\>        : select a specific device:\
-  \
+ \
 Device numbers start at zero.
 
+## Primenet.py Arguments
+-h, --help            show this help message and exit\
+-u USERNAME           Primenet user name\
+-p PASSWORD           Primenet password\
+-t TIMEOUT            Seconds to sleep between updates\
+--dirs DIR \[DIR ...\]  GpuOwl directories to scan\
+--tasks NTASKS        Number of tasks to fetch ahead\
+-w \{PF,PRP_FIRST,PRP_100M,PRP_WORLD_RECORD,PRP_DC,PM1,PRP,150,151,152,153,4\}  GIMPS work type

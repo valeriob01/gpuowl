@@ -1,33 +1,51 @@
-// GpuOwL, a Mersenne primality tester. Copyright (C) 2017-2018 Mihai Preda.
+// Copyright Mihai Preda.
 
 #pragma once
 
 #include "common.h"
-#include "clwrap.h"
 
 #include <string>
 #include <vector>
 
 class Args {
-private:
-  
 public:
+  static std::string mergeArgs(int argc, char **argv);
+
   enum {CARRY_AUTO = 0, CARRY_SHORT, CARRY_LONG};
 
-  std::string clArgs;
-  std::string user;
-  std::string cpu;
-  std::string dump;
+  void parse(string line);
   
-  int device = -1;
+  string user;
+  string cpu;
+  string dump;
+  string dir;
+  string resultsFile = "results.txt";
+  string masterDir;
+  std::vector<std::string> flags;
+  
+  int device = 0;
+  
   bool timeKernels = false;
-  int carry = CARRY_AUTO;
-  u32 blockSize = 400;
-  int fftSize = 0;
   bool enableTF = false;
-  u32 B1 = 500000;
-  u32 B2_B1_ratio = 30;
+  bool cudaYield = false;
+  u32 proofPow = 0;
   
-  // return false to stop.
-  bool parse(int argc, char **argv);
+  int carry = CARRY_AUTO;
+  const u32 blockSize = 400;
+  u32 logStep = 200000;
+  int fftSize = 0;
+
+  u32 B1 = 500000;
+  u32 B2 = 0;
+  u32 B2_B1_ratio = 30;
+
+  u32 prpExp = 0;
+  u32 pm1Exp = 0;
+
+  u32 maxBuffers = 0;
+  size_t maxAlloc = 0;
+
+  u32 iters = 0;
+
+  void printHelp();
 };
