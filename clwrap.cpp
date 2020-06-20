@@ -58,6 +58,13 @@ void check(int err, const char *file, int line, const char *func, string_view me
   }
 }
 
+std::string getUUID(int seqId) {
+  File f = File::openRead("/sys/class/drm/card"s + std::to_string(seqId) + "/device/unique_id");
+  std::string uuid = f ? f.readLine() : "";
+  if (!uuid.empty() && uuid.back() == '\n') { uuid.pop_back(); }
+  return uuid;
+}
+
 static vector<cl_device_id> getDeviceIDs(bool onlyGPU) {
   cl_platform_id platforms[16];
   int nPlatforms = 0;
