@@ -65,10 +65,10 @@ static vector<cl_device_id> getDeviceIDs(bool onlyGPU) {
   vector<cl_device_id> ret;
   cl_device_id devices[64];
   for (int i = 0; i < nPlatforms; ++i) {
-    int n = 0;
+    unsigned n = 0;
     auto kind = onlyGPU ? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_ALL;
     CHECK1(clGetDeviceIDs(platforms[i], kind, 64, devices, &n));
-    for (int k = 0; k < n; ++k) { ret.push_back(devices[k]); }
+    for (unsigned k = 0; k < n; ++k) { ret.push_back(devices[k]); }
   }
   return ret;
 }
