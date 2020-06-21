@@ -1,12 +1,12 @@
 CXXFLAGS = -Wall -O2 -std=c++17
 
-LIBPATH = -L/opt/rocm/opencl/lib/x86_64 -L/opt/amdgpu-pro/lib/x86_64-linux-gnu -L/c/Windows/System32 -L.
+LIBPATH = -L/opt/rocm-3.3.0/opencl/lib/x86_64 -L/opt/rocm-3.1.0/opencl/lib/x86_64 -L/opt/rocm/opencl/lib/x86_64 -L/opt/amdgpu-pro/lib/x86_64-linux-gnu -L.
 
 LDFLAGS = -lstdc++fs -lOpenCL -lgmp -pthread ${LIBPATH}
 
 LINK = $(CXX) -o $@ ${OBJS} ${LDFLAGS}
 
-SRCS = Pm1Plan.cpp GmpUtil.cpp Worktodo.cpp common.cpp main.cpp Gpu.cpp clwrap.cpp Task.cpp checkpoint.cpp timeutil.cpp Args.cpp state.cpp Signal.cpp FFTConfig.cpp AllocTrac.cpp gpuowl-wrap.cpp
+SRCS = Pm1Plan.cpp GmpUtil.cpp Worktodo.cpp common.cpp main.cpp Gpu.cpp clwrap.cpp Task.cpp checkpoint.cpp timeutil.cpp Args.cpp state.cpp Signal.cpp FFTConfig.cpp AllocTrac.cpp gpuowl-wrap.cpp sha3.cpp
 OBJS = $(SRCS:%.cpp=%.o)
 DEPDIR := .d
 $(shell mkdir -p $(DEPDIR) >/dev/null)
@@ -23,7 +23,7 @@ gpuowl-win.exe: ${OBJS}
 	strip $@
 
 clean:
-	rm -f ${OBJS} gpuowl gpuowl-win
+	rm -f ${OBJS} gpuowl gpuowl-win.exe
 
 %.o : %.cpp
 %.o : %.cpp $(DEPDIR)/%.d gpuowl-wrap.cpp version.inc
@@ -38,8 +38,11 @@ version.inc: FORCE
 	diff -q -N version.new version.inc >/dev/null || mv version.new version.inc
 	echo Version: `cat version.inc`
 
-gpuowl-wrap.cpp: gpuowl.cl head.txt tail.txt
-	cat head.txt gpuowl.cl tail.txt > gpuowl-wrap.cpp
+gpuowl-expanded.cl: gpuowl.cl
+	./tools/expand.py < gpuowl.cl > gpuowl-expanded.cl
+
+gpuowl-wrap.cpp: gpuowl-expanded.cl head.txt tail.txt
+	cat head.txt gpuowl-expanded.cl tail.txt > gpuowl-wrap.cpp
 
 FORCE:
 

@@ -5,7 +5,7 @@
 #include "common.h"
 
 #include <string>
-#include <vector>
+#include <set>
 
 class Args {
 public:
@@ -14,6 +14,8 @@ public:
   enum {CARRY_AUTO = 0, CARRY_SHORT, CARRY_LONG};
 
   void parse(string line);
+  void setDefaults();
+  bool uses(const std::string& key) const { return flags.count(key); }
   
   string user;
   string cpu;
@@ -21,27 +23,35 @@ public:
   string dir;
   string resultsFile = "results.txt";
   string masterDir;
-  std::vector<std::string> flags;
+  string uid;
+  string binaryFile;
+  string verifyPath;
+  std::set<std::string> flags;
   
   int device = 0;
   
   bool timeKernels = false;
-  bool enableTF = false;
   bool cudaYield = false;
+  bool cleanup = false;
+  bool noSpin = false;
+  bool safeMath = false;
+  
   u32 proofPow = 0;
   
   int carry = CARRY_AUTO;
-  const u32 blockSize = 400;
-  u32 logStep = 200000;
-  int fftSize = 0;
+  u32 blockSize = 0;
+  u32 logStep   = 0;
+  u32 jacobiStep = 0;
+  string fftSpec;
 
-  u32 B1 = 500000;
+  u32 B1 = 1000000;
   u32 B2 = 0;
   u32 B2_B1_ratio = 30;
 
   u32 prpExp = 0;
   u32 pm1Exp = 0;
-
+  u32 llExp = 0;
+  
   u32 maxBuffers = 0;
   size_t maxAlloc = 0;
 

@@ -2,22 +2,41 @@
 
 #include "checkpoint.h"
 #include "File.h"
+#include "Blake2.h"
 
 #include <filesystem>
 #include <ios>
 #include <cassert>
+#include <cinttypes>
 
 namespace fs = std::filesystem;
 
-static fs::path fileName(u32 E, u32 k, const string& suffix = "", const string& extension = "owl") {
+namespace {
+
+fs::path fileName(u32 E, u32 k, const string& suffix, const string& extension) {
   string sE = to_string(E);
   auto baseDir = fs::current_path() / sE;
   if (!fs::exists(baseDir)) { fs::create_directory(baseDir); }
   return baseDir / (to_string(k) + suffix + '.' + extension);
 }
 
-// Residue from compacted words.
-u64 residue(const vector<u32> &words) { return (u64(words[1]) << 32) | words[0]; }
+void cleanup(u32 E, const string& ext) {
+  error_code noThrow;
+  fs::remove(fileName(E, E, "", ext), noThrow);
+  fs::remove(fileName(E, E, "-old", ext), noThrow);
+  
+  // attempt delete the exponent folder in case it is now empty
+  fs::remove(fs::current_path() / to_string(E), noThrow);
+}
+
+u32 nWords(u32 E) { return (E - 1) / 32 + 1; }
+
+}
+
+void PRPState::cleanup(u32 E) { ::cleanup(E, EXT); }
+void  P1State::cleanup(u32 E) { ::cleanup(E, EXT); }
+void  P2State::cleanup(u32 E) { ::cleanup(E, EXT); }
+
 
 template<typename T>
 static void write(FILE *fo, const vector<T> &v) {
@@ -78,14 +97,55 @@ bool StateLoader::load(u32 E, const std::string& extension) {
   return false;
 }
 
+
+// --- LL ---
+
+LLState::LLState(u32 E) : E{E} {
+  if (!load(E, EXT)) {  
+    k = 0;
+    data = makeVect(nWords(E), 4);
+  }
+}
+
+bool LLState::doLoad(const char* headerLine, FILE *fi) {
+  u32 fileE = 0;
+  u64 fileHash = 0;
+  if (sscanf(headerLine, HEADER_v1, &fileE, &k, &fileHash) != 3) {
+    log("invalid header\n");
+    return false;
+  }
+  assert(E == fileE);
+  if (!read(fi, nWords(E), &data)) {
+    log("can't read data\n");
+    return false;
+  }
+  u64 hash = Blake2::hash(E, k, data);
+  bool hashOK = (hash == fileHash);
+  if (!hashOK) {
+    // log("Hash %u %u %lu\n", E, k, data.size());
+    log("hash mismatch %" PRIx64 " vs. expected %" PRIx64 "\n", hash, fileHash);
+  }
+  return hashOK;
+}
+
+void LLState::doSave(FILE* fo) {
+  assert(data.size() == nWords(E));
+  u64 hash = Blake2::hash(E, k, data);
+  // log("Hash %u %u %lu %lx %lx\n", E, k, data.size(), hash, h2);
+  if (fprintf(fo, HEADER_v1, E, k, hash) <= 0) { throw(ios_base::failure("can't write header")); }
+  write(fo, data);
+}
+
+
+// --- PRP ---
+
 PRPState::PRPState(u32 E, u32 iniBlockSize) : E{E} {
-  if (!load(E, "owl")) {  
+  if (!load(E, EXT)) {  
     // log("starting from the beginning\n");
     k = 0;
     blockSize = iniBlockSize;
     res64  = 3;
-    u32 nWords = (E - 1) / 32 + 1;
-    check = makeVect(nWords, 1);
+    check = makeVect(nWords(E), 1);
   }
 }
 
@@ -93,8 +153,7 @@ bool PRPState::doLoad(const char* headerLine, FILE *fi) {
   u32 fileE = 0;
   if (sscanf(headerLine, HEADER_v10, &fileE, &k, &blockSize, &res64, &nErrors) == 5) {
     assert(E == fileE);
-    u32 nWords = (E - 1) / 32 + 1;
-    return read(fi, nWords, &check);
+    return read(fi, nWords(E), &check);
   } else {
     return false;
   }
@@ -114,8 +173,7 @@ P1State::P1State(u32 E, u32 B1) : E{E}, B1{B1} {
     // log("%u P1 starting from the beginning.\n", E);
     k = 0;
     nBits = 0;
-    u32 nWords = (E - 1) / 32 + 1;
-    data = makeVect(nWords, 1);
+    data = makeVect(nWords(E), 1);
   }
 }
 
@@ -127,16 +185,14 @@ bool P1State::doLoad(const char* headerLine, FILE *fi) {
     if (B1 != fileB1) {
       log("%u P1 wants B1=%u but savefile has B1=%u. Fix B1 or move savefile\n", E, B1, fileB1);
     } else {
-      u32 nWords = (E - 1) / 32 + 1;
-      return read(fi, nWords, &data);
+      return read(fi, nWords(E), &data);
     }
   }
   return false;
 }
 
 void P1State::doSave(FILE* fo) {
-  u32 nWords = (E - 1) / 32 + 1;
-  assert(data.size() == nWords);
+  assert(data.size() == nWords(E));
   if (fprintf(fo, HEADER_v1, E, B1, k, nBits) <= 0) { throw(ios_base::failure("can't write header")); }
   write(fo, data);
 }

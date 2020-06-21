@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 using u8  = uint8_t;
 using i32 = int32_t;
@@ -29,3 +30,9 @@ namespace std::filesystem{};
 namespace fs = std::filesystem;
 
 string hex(u64 x);
+
+string rstripNewline(string s);
+
+using Words = vector<u32>;
+
+inline u32 roundUp(u32 x, u32 multiple) { return ((x - 1) / multiple + 1) * multiple; }

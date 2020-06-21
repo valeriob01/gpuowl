@@ -44,7 +44,7 @@ void log(const char *fmt, ...) {
 
   std::unique_lock lock(logMutex);
   for (auto &f : logFiles) {
-    fprintf(f.get(), "%s %s", prefix.c_str(), buf);
+    fprintf(f.get(), f.get() == stdout ? "\r%s %s" : "%s %s", prefix.c_str(), buf);
 #if !(defined(_DEFAULT_SOURCE) || defined(_BSD_SOURCE))
     fflush(f.get());
 #endif
@@ -55,4 +55,9 @@ string hex(u64 x) {
   ostringstream out{};
   out << setbase(16) << setfill('0') << setw(16) << x;
   return out.str();
+}
+
+std::string rstripNewline(std::string s) {
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) { s.pop_back(); }
+  return s;
 }

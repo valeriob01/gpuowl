@@ -44,24 +44,30 @@ using EventHolder = std::unique_ptr<cl_event>;
 
 class Context;
 
+std::string getUUID(int seqId);
+
 void check(int err, const char *file, int line, const char *func, string_view mes);
 
 #define CHECK1(err) check(err, __FILE__, __LINE__, __func__, #err)
 #define CHECK2(err, mes) check(err, __FILE__, __LINE__, __func__, mes)
 
 vector<cl_device_id> getAllDeviceIDs();
-vector<cl_device_id> getGPUDeviceIDs();
 string getShortInfo(cl_device_id device);
 string getLongInfo(cl_device_id device);
 
 // Get GPU free memory in bytes.
 u64 getFreeMem(cl_device_id id);
 bool hasFreeMemInfo(cl_device_id id);
+bool isAmdGpu(cl_device_id id);
 
 cl_context createContext(cl_device_id id);
 
-cl_program compile(cl_device_id device, cl_context context, const string &source, const string &extraArgs,
-                   const std::vector<pair<string, std::any>> &defines);
+cl_program compile(cl_context context, cl_device_id device, const string &source, const string &extraArgs,
+                   const std::vector<string>& defines);
+
+cl_program loadBinary(cl_context, cl_device_id, const string& fileName);
+
+string getBinary(cl_program program);
 
 void dumpBinary(cl_program program, const string& fileName);
 
@@ -79,17 +85,11 @@ cl_queue makeQueue(cl_device_id d, cl_context c, bool profile);
 void flush( cl_queue q);
 void finish(cl_queue q);
 
-EventHolder run(cl_queue queue, cl_kernel kernel, size_t groupSize, size_t workSize, const string &name);
+EventHolder run(cl_queue queue, cl_kernel kernel, size_t groupSize, size_t workSize, const string &name, bool generateEvent);
 void read(cl_queue queue, bool blocking, cl_mem buf, size_t size, void *data, size_t start = 0);
 void write(cl_queue queue, bool blocking, cl_mem buf, size_t size, const void *data, size_t start = 0);
 
-// template<typename T> void read(cl_queue queue, bool blocking, Buffer<T> &buf, size_t size, T *data, size_t start = 0);
-// void write(cl_queue queue, bool blocking, Buffer &buf, size_t size, const void *data, size_t start = 0);
-
 void copyBuf(cl_queue queue, const cl_mem src, cl_mem dst, size_t size);
-
-// void copyBuf(cl_queue queue, Buffer &src, Buffer &dst, size_t size);
-
 
 void fillBuf(cl_queue q, cl_mem buf, void *pat, size_t patSize, size_t size = 0, size_t start = 0);
 int getKernelNumArgs(cl_kernel k);

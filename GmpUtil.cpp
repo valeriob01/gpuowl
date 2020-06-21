@@ -22,8 +22,9 @@ mpz_class primorial(u32 p) {
   return b;
 }
 
-mpz_class powerSmooth(u32 exp, u32 B1) {
-  mpz_class a{u64(exp) << 8}; // boost 2s.
+mpz_class powerSmooth(u32 exp, u32 B1) {  
+  mpz_class a{exp};
+  a *= 256;  // boost 2s.
   for (int k = log2(B1); k >= 1; --k) { a *= primorial(pow(B1, 1.0 / k)); }
   return a;
 }
@@ -32,7 +33,7 @@ u32 sizeBits(mpz_class a) { return mpz_sizeinbase(a.get_mpz_t(), 2); }
 
 }
 
-vector<bool> bitsMSB(mpz_class a) {
+vector<bool> bitsMSB(const mpz_class& a) {
   vector<bool> bits;
   int nBits = sizeBits(a);
   bits.reserve(nBits);
@@ -43,10 +44,19 @@ vector<bool> bitsMSB(mpz_class a) {
 
 // return GCD(bits - sub, 2^exp - 1) as a decimal string if GCD!=1, or empty string otherwise.
 std::string GCD(u32 exp, const std::vector<u32>& words, u32 sub) {
-  string ret = mpz_class{gcd((mpz_class{1} << exp) - 1, mpz(words) - sub)}.get_str();
-  return ret == "1" ? ""s : ret;
+  mpz_class w = mpz(words);
+  if (w == 0 || w == sub) {
+    throw std::domain_error("GCD invalid input");
+  }
+  mpz_class resultGcd = gcd((mpz_class{1} << exp) - 1, w - sub);
+  return (resultGcd == 1) ? ""s : resultGcd.get_str();
 }
 
-
-// "Rev" means: most significant bit first (at index 0).
+// MSB: Most Significant Bit first (at index 0).
 vector<bool> powerSmoothMSB(u32 exp, u32 B1) { return bitsMSB(powerSmooth(exp, B1)); }
+
+int jacobi(u32 exp, const std::vector<u32>& words) {
+  mpz_class w = mpz(words) - 2;
+  mpz_class m = (mpz_class{1} << exp) - 1;
+  return mpz_jacobi(w.get_mpz_t(), m.get_mpz_t());
+}

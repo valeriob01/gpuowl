@@ -4,33 +4,12 @@
 #include <initializer_list>
 
 // Blake2 hash: https://tools.ietf.org/html/rfc7693
-class Blake2 {
-  struct Data {
-    const char* begin;
-    const char* end;
-
-    Data(const char* ptr, size_t size) : begin(ptr), end(ptr + size) {}
-    Data(const void* ptr, size_t size) : Data{static_cast<const char*>(ptr), size} {}
-
-    Data(u32 x) : Data{&x, sizeof(x)} {}
-    Data(u64 x) : Data{&x, sizeof(x)} {}
-    
-    template<typename T>
-    Data(const std::vector<T>& v) : Data{v.data(), v.size() * sizeof(T)} {}
-  };
-
-  
-public:
-  static u64 hash(std::initializer_list<Data> datas) {
-    Blake2 hasher{};
-    for (Data data : datas) { hasher << data; }
-    return std::move(hasher).finish();
+class Blake2Hash {  
+public:  
+  Blake2Hash(u8 nOutputBytes = 8) {
+    for (int i = 0; i < 8; ++i) { h[i] = IV[i]; }
+    h[0] ^= 0x01'01'00'00 | nOutputBytes;
   }
-  
-  Blake2() : Blake2{8} {}
-  
-  Blake2& push(Data data) { push(data.begin, data.end); return *this; }
-  Blake2& operator<<(Data data) { return push(data); }
 
   u64 finish() && {
     assert(blockIt);
@@ -39,15 +18,11 @@ public:
     blockIt = nullptr;
     return h[0];
   }
-    
-private:
-  Blake2(u8 nOutputBytes) {
-    for (int i = 0; i < 8; ++i) { h[i] = IV[i]; }
-    h[0] ^= 0x01'01'00'00 | nOutputBytes;
-  }
-  
-  void push(const char* it, const char* end) {
+
+  void update(const void* data, u32 size) {
     assert(blockIt);
+    const char *it = reinterpret_cast<const char *>(data);
+    const char *end = it + size;
     while (it < end) {
       if (blockIt == blockEnd) {
         compress<false>(blockEnd - blockBegin); // == 128
@@ -61,6 +36,7 @@ private:
     }
   }
   
+private:  
   u64 h[8];
   u64 v[16];
   u64 m[16];
@@ -121,3 +97,7 @@ private:
     for (int i = 0; i < 8; ++i) { h[i] ^= v[i] ^ v[i + 8]; }
   }
 };
+
+#include "Hash.h"
+
+using Blake2 = Hash<Blake2Hash>;

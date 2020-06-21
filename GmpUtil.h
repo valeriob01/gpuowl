@@ -12,6 +12,16 @@
 std::string GCD(u32 exp, const std::vector<u32>& words, u32 sub = 0);
 
 // Represent mpz value as vector of bits with the most significant bit first.
-vector<bool> bitsMSB(mpz_class a);
+vector<bool> bitsMSB(const mpz_class& a);
 
 vector<bool> powerSmoothMSB(u32 exp, u32 B1);
+
+// Returns jacobi-symbol(words - 2, 2**exp - 1)
+int jacobi(u32 exp, const std::vector<u32>& words);
+
+inline mpz_class mpz64(u64 h) {
+  mpz_class ret{u32(h >> 32)};
+  ret <<= 32;
+  ret += u32(h);
+  return ret;
+}

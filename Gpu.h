@@ -13,6 +13,7 @@
 #include <string>
 #include <memory>
 #include <variant>
+#include <atomic>
 
 struct Args;
 struct PRPResult;
@@ -26,8 +27,9 @@ class Gpu {
   u32 N;
 
   u32 hN, nW, nH, bufSize;
+  u32 WIDTH;
   bool useLongCarry;
-  bool useMiddle;
+  bool useMergedMiddle;
   bool timeKernels;
 
   cl_device_id device;
@@ -37,23 +39,31 @@ class Gpu {
   
   Kernel carryFused;
   Kernel carryFusedMul;
+  Kernel carryFusedLL;
   Kernel fftP;
   Kernel fftW;
-  Kernel fftH;
+  Kernel fftHin;
+  Kernel fftHout;
   Kernel fftMiddleIn;
   Kernel fftMiddleOut;
   
   Kernel carryA;
   Kernel carryM;
   Kernel carryB;
+  Kernel carryLL;
   
   Kernel transposeW, transposeH;
   Kernel transposeIn, transposeOut;
 
   Kernel multiply;
+  Kernel multiplyDelta;
   Kernel square;
-  Kernel tailFused;
+  Kernel tailFusedSquare;
   Kernel tailFusedMulDelta;
+  Kernel tailFusedMulLow;
+  Kernel tailFusedMul;
+  Kernel tailSquareLow;
+  Kernel tailMulLowLow;
   
   Kernel readResidue;
   Kernel isNotZero;
@@ -62,7 +72,8 @@ class Gpu {
 
   // Trigonometry constant buffers, used in FFTs.
   ConstBuffer<double2> bufTrigW;
-  ConstBuffer<double2> bufTrigH; 
+  ConstBuffer<double2> bufTrigH;
+  ConstBuffer<double2> bufTrigM;
 
   // Weight constant buffers, with the direct and inverse weights. N x double.
   ConstBuffer<double> bufWeightA;      // Direct weights.
@@ -82,26 +93,49 @@ class Gpu {
   Buffer<i64> bufCarry;  // Carry shuttle.
   
   Buffer<int> bufReady;  // Per-group ready flag for stairway carry propagation.
+  HostAccessBuffer<u32> bufRoundoff;
+  HostAccessBuffer<u32> bufCarryMax;
+  HostAccessBuffer<u32> bufCarryMulMax;
 
   // Small aux buffer used to read res64.
   HostAccessBuffer<int> bufSmallOut;
   HostAccessBuffer<u64> bufSumOut;
 
+  // Auxilliary big buffers
+  Buffer<double> buf1;
+  Buffer<double> buf2;
+  Buffer<double> buf3;
+  
+  const Args& args;
+  
   vector<u32> computeBase(u32 E, u32 B1);
   pair<vector<u32>, vector<u32>> seedPRP(u32 E, u32 B1);
   
   vector<int> readSmall(Buffer<int>& buf, u32 start);
 
-  void tW(Buffer<double>& in, Buffer<double>& out);
-  void tH(Buffer<double>& in, Buffer<double>& out);
+  void tW(Buffer<double>& out, Buffer<double>& in);
+  void tH(Buffer<double>& out, Buffer<double>& in);
+  void tailFused(Buffer<double>& out, Buffer<double>& in) { tailFusedSquare(out, in); }
   
   vector<int> readOut(ConstBuffer<int> &buf);
   void writeIn(const vector<u32> &words, Buffer<int>& buf);
   void writeIn(const vector<int> &words, Buffer<int>& buf);
+
+  void modSqLoopRaw(Buffer<int>& io, u32 reps, Buffer<double>& buf1, Buffer<double>& buf2, bool mul3, bool sub2);
   
-  void modSqLoop(u32 reps, Buffer<double>& buf1, Buffer<double>& buf2, Buffer<int>& io, bool mul3 = false);
+  void modSqLoop(Buffer<int>& io, u32 reps, Buffer<double>& buf1, Buffer<double>& buf2) {
+    modSqLoopRaw(io, reps, buf1, buf2, false, false);
+  }
+  void modSqLoopMul(Buffer<int>& io, u32 reps, Buffer<double>& buf1, Buffer<double>& buf2) {
+    modSqLoopRaw(io, reps, buf1, buf2, true, false);
+  }
+  void modSqLoopLL(Buffer<int>& io, u32 reps, Buffer<double>& buf1, Buffer<double>& buf2) {
+    modSqLoopRaw(io, reps, buf1, buf2, false, true);
+  }
   
-  void modMul(Buffer<int>& in, Buffer<double>& buf1, Buffer<double>& buf2, Buffer<double>& buf3, Buffer<int>& io, bool mul3 = false);
+  u32 modSqLoopTo(Buffer<int>& io, u32 begin, u32 end);
+
+  void modMul(Buffer<int>& io, Buffer<int>& in, Buffer<double>& buf1, Buffer<double>& buf2, Buffer<double>& buf3, bool mul3 = false);
   bool equalNotZero(Buffer<int>& bufCheck, Buffer<int>& bufAux);
   u64 bufResidue(Buffer<int>& buf);
   
@@ -109,29 +143,37 @@ class Gpu {
 
   PRPState loadPRP(u32 E, u32 iniBlockSize, Buffer<double>&, Buffer<double>&, Buffer<double>&);
 
-  void coreStep(bool leadIn, bool leadOut, bool mul3, Buffer<double>& buf1, Buffer<double>& buf2, Buffer<int>& io);
+  void coreStep(bool leadIn, bool leadOut, bool mul3, bool sub2, Buffer<double>& buf1, Buffer<double>& buf2, Buffer<int>& io);
 
-  void multiplyLow(Buffer<double>& in, Buffer<double>& tmp, Buffer<double>& io);
-  void exponentiate(const Buffer<double>& base, u64 exp, Buffer<double>& tmp, Buffer<double>& out);
-  void topHalf(Buffer<double>& tmp, Buffer<double>& io);
+  void multiplyLow(Buffer<double>& io, const Buffer<double>& in, Buffer<double>& tmp);
+
+  void exponentiateCore(Buffer<double>& out, const Buffer<double>& base, const vector<bool>& exp, Buffer<double>& tmp);
+  void exponentiateLow(Buffer<double>& out, const Buffer<double>& base, u64 exp, Buffer<double>& tmp, Buffer<double>& tmp2);
+  void exponentiateHigh(Buffer<int>& bufInOut, const vector<bool>& exp, Buffer<double>& bufBaseLow, Buffer<double>& buf1, Buffer<double>& buf2);
+  
+  void topHalf(Buffer<double>& out, Buffer<double>& inTmp);
   void writeState(const vector<u32> &check, u32 blockSize, Buffer<double>&, Buffer<double>&, Buffer<double>&);
+  void tailMulDelta(Buffer<double>& out, Buffer<double>& in, Buffer<double>& bufA, Buffer<double>& bufB);
+  void tailMul(Buffer<double>& out, Buffer<double>& in, Buffer<double>& inTmp);
+  
 
   Gpu(const Args& args, u32 E, u32 W, u32 BIG_H, u32 SMALL_H, u32 nW, u32 nH,
-      cl_device_id device, bool timeKernels, bool useLongCarry, struct Weights&& weights);
+      cl_device_id device, bool timeKernels, bool useLongCarry, struct Weights&& weights, bool isPm1);
 
   vector<u32> readAndCompress(ConstBuffer<int>& buf);
+  void printRoundoff(u32 E);
   
 public:
-  static unique_ptr<Gpu> make(u32 E, const Args &args);
+  static unique_ptr<Gpu> make(u32 E, const Args &args, bool isPm1);
+  static void doDiv9(u32 E, Words& words);
+  static bool equals9(const Words& words);
+  static u64 residue(const Words& words) { return (u64(words[1]) << 32) | words[0]; }
   
   Gpu(const Args& args, u32 E, u32 W, u32 BIG_H, u32 SMALL_H, u32 nW, u32 nH,
-      cl_device_id device, bool timeKernels, bool useLongCarry);
+      cl_device_id device, bool timeKernels, bool useLongCarry, bool isPm1);
 
-  vector<u32> roundtripData()  { return readData(); }
-  vector<u32> roundtripCheck() { return readCheck(); }
-
-  vector<u32> writeData(const vector<u32> &v);
-  vector<u32> writeCheck(const vector<u32> &v);
+  void writeData(const vector<u32> &v) { writeIn(v, bufData); }
+  void writeCheck(const vector<u32> &v) { writeIn(v, bufCheck); }
   
   u64 dataResidue()  { return bufResidue(bufData); }
   u64 checkResidue() { return bufResidue(bufCheck); }
@@ -146,11 +188,17 @@ public:
   vector<u32> readCheck() { return readAndCompress(bufCheck); }
   vector<u32> readData() { return readAndCompress(bufData); }
 
-  std::tuple<bool, u64, u32> isPrimePRP(u32 E, const Args& args);
+  std::tuple<bool, u64, u32> isPrimePRP(u32 E, const Args& args, std::atomic<u32>& factorFoundForExp);
+  std::tuple<bool, u64> isPrimeLL(u32 E, const Args& args);
 
-  void buildProof(u32 E, const Args& args);
-  
   std::variant<string, vector<u32>> factorPM1(u32 E, const Args& args, u32 B1, u32 B2);
   
   u32 getFFTSize() { return N; }
+
+  // return A^x * M
+  Words expMul(const Words& A, u64 x, const Words& M);
+  Words expMul(const Words& A, const vector<bool>& x, const Words& M);
+  
+  // return A^(2^n)
+  Words expExp2(const Words& A, u32 n);
 };

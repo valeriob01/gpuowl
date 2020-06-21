@@ -1,4 +1,4 @@
-// Copyright Mihai Preda.
+// Copyright (C) Mihai Preda.
 
 #pragma once
 
@@ -98,25 +98,19 @@ public:
     return ret;
   }
 
-  void readAsync(vector<T>& out, size_t sizeOrFull = 0) const {
+  void readAsync(vector<T>& out, size_t sizeOrFull = 0, size_t start = 0) const {
     auto readSize = sizeOrFull ? sizeOrFull : this->size;
     assert(readSize <= this->size);
     out.resize(readSize);
-    ::read(this->queue->get(), false, this->get(), readSize * sizeof(T), out.data());
+    ::read(this->queue->get(), false, this->get(), readSize * sizeof(T), out.data(), start * sizeof(T));
   }
 
   // sync write
   void operator=(const vector<T>& vect) {
-    assert(this->size == vect.size());
+    assert(this->size >= vect.size());
     write(this->queue->get(), true, this->get(), vect.size() * sizeof(T), vect.data());
   }
 
-  // async write
-  void operator<<(const vector<T>& vect) {
-    assert(this->size == vect.size());
-    write(this->queue->get(), false, this->get(), this->size * sizeof(T), vect.data());
-  }
-  
   operator vector<T>() const { return read(); }
 
   // async read

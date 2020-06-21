@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <vector>
 #include <string>
+#include <optional>
 
 namespace fs = std::filesystem;
 
@@ -22,6 +23,7 @@ namespace std {
 class File {
   std::unique_ptr<FILE> ptr;
 
+  File() = default;
   File(std::unique_ptr<FILE>&& ptr, std::string_view name) : ptr{std::move(ptr)}, name{name} {}
 
   static File open(const fs::path &name, const char *mode, bool doLog) {
@@ -35,6 +37,29 @@ class File {
   }
   
 public:
+  class It {
+  public:
+    It(File& file) : file{&file}, line{file ? file.maybeReadLine() : nullopt} {}
+    It() = default;
+
+    bool operator==(const It& rhs) const { return !line && !rhs.line; }
+    bool operator!=(const It& rhs) const { return !(*this == rhs); }
+    
+    It& operator++() {
+      line = file->maybeReadLine();
+      return *this;
+    }
+    
+    string operator*() { return *line; }
+
+  private:
+    File *file{};
+    optional<string> line;
+  };
+
+  It begin() { return It{*this}; }
+  It end() { return It{}; }
+  
   static File openRead(const fs::path& name, bool doThrow = false) { return open(name, "rb", doThrow); }
   static File openWrite(const fs::path &name) { return open(name, "wb", true); }
   static File openAppend(const fs::path &name) { return open(name, "ab", true); }
@@ -94,10 +119,24 @@ public:
 
   bool empty() { return size() == 0; }
 
+  // Returns newline-ended line.
   std::string readLine() {
     char buf[512];
+    buf[0] = 0;
     bool ok = fgets(buf, sizeof(buf), get());
-    return ok ? buf : "";
+    if (!ok) { return ""; }  // EOF or error
+    string line = buf;
+    if (line.empty() || line.back() != '\n') {
+      log("%s : line \"%s\" does not end with a newline", name.c_str(), line.c_str());
+      throw "lines must end with newline";
+    }
+    return line;
+  }
+
+  std::optional<std::string> maybeReadLine() {
+    std::string line = readLine();
+    if (line.empty()) { return std::nullopt; }
+    return line;
   }
 
   template<typename T>
@@ -108,5 +147,10 @@ public:
       throw(std::ios_base::failure(name + ": can't read"));
     }
     return ret;
+  }
+
+  string readAll() {
+    size_t sz = size();
+    return {read<char>(sz).data(), sz};
   }
 };

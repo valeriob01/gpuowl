@@ -81,7 +81,6 @@ static vector<cl_device_id> getDeviceIDs(bool onlyGPU) {
 }
 
 vector<cl_device_id> getAllDeviceIDs() { return getDeviceIDs(false); }
-vector<cl_device_id> getGpuDeviceIDs() { return getDeviceIDs(true); }
 
 static void getInfo_(cl_device_id id, int what, size_t bufSize, void *buf, string_view whatStr) {
   CHECK2(clGetDeviceInfo(id, what, bufSize, buf, NULL), whatStr);
@@ -132,6 +131,14 @@ static string getHwName(cl_device_id id) {
   char name[64];
   GET_INFO(id, CL_DEVICE_NAME, name);
   return name;
+}
+
+
+#define CL_DEVICE_VENDOR_ID 0x1001
+bool isAmdGpu(cl_device_id id) {
+  u32 pcieId = 0;
+  GET_INFO(id, CL_DEVICE_VENDOR_ID, pcieId);
+  return pcieId == 0x1002;
 }
 
 /*
@@ -189,33 +196,39 @@ void release(cl_queue queue)     { CHECK1(clReleaseCommandQueue(queue)); }
 void release(cl_kernel k)        { CHECK1(clReleaseKernel(k)); }
 void release(cl_event event)     { CHECK1(clReleaseEvent(event)); }
 
+string getBinary(cl_program program) {
+  size_t size;
+  CHECK1(clGetProgramInfo(program, CL_PROGRAM_BINARY_SIZES, sizeof(size), &size, NULL));
+  auto buf = make_unique<char[]>(size + 1);
+  char *ptr = buf.get();
+  CHECK1(clGetProgramInfo(program, CL_PROGRAM_BINARIES, sizeof(&buf), &ptr, NULL));
+  return {buf.get(), size};
+}
+
 void dumpBinary(cl_program program, const string &fileName) {
-  if (auto fo = File::openWrite(fileName)) {
-    size_t size;
-    CHECK1(clGetProgramInfo(program, CL_PROGRAM_BINARY_SIZES, sizeof(size), &size, NULL));
-    char *buf = new char[size + 1];
-    CHECK1(clGetProgramInfo(program, CL_PROGRAM_BINARIES, sizeof(&buf), &buf, NULL));
-    auto nWrote = fwrite(buf, size, 1, fo.get());
-    assert(nWrote == 1);
-    delete[] buf;
-  } else {
-    throw "dump "s + fileName;
-  }
+  File::openWrite(fileName).write(getBinary(program));
 }
 
 static cl_program loadSource(cl_context context, const string &source) {
   const char *ptr = source.c_str();
   size_t size = source.size();
-  int err;
+  int err = 0;
   cl_program program = clCreateProgramWithSource(context, 1, &ptr, &size, &err);
   CHECK2(err, "clCreateProgramWithSource");
   return program;
 }
 
-static void build(cl_program program, cl_device_id device, const string &args) {
+static void build(cl_program program, cl_device_id device, string args) {
   Timer timer;
   int err = clBuildProgram(program, 0, NULL, args.c_str(), NULL, NULL);
   bool ok = (err == CL_SUCCESS);
+  if (!ok) {
+    log("ASM compilation failed, retrying compilation using NO_ASM\n");
+    args += " -DNO_ASM=1";
+    err = clBuildProgram(program, 0, NULL, args.c_str(), NULL, NULL);
+    ok = (err == CL_SUCCESS);
+  }
+  
   if (!ok) { log("OpenCL compilation error %d (args %s)\n", err, args.c_str()); }
   
   size_t logSize;
@@ -234,37 +247,33 @@ static void build(cl_program program, cl_device_id device, const string &args) {
   }
 }
 
-std::string toLiteral(const std::any& v) {
-  if (auto *p = std::any_cast<u32>(&v)) {
-    return to_string(*p) + "u";
-  } else if (auto *p = std::any_cast<i32>(&v)) {
-    return to_string(*p);
-  } else if (auto *p = std::any_cast<u64>(&v)) {
-    return to_string(*p) + "ul";
-  } else if (auto *p = std::any_cast<double>(&v)) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%a", *p);
-    return buf;
-  } else {
-    log("No literal formatting defined for type %s\n", v.type().name());
-  }
-  assert(false);
-  return "";
+cl_program loadBinary(cl_context context, cl_device_id id, const string &fileName) {
+  string bytes = File::openRead(fileName).readAll();
+  size_t size = bytes.size();
+  const unsigned char *ptr = reinterpret_cast<const unsigned char *>(bytes.c_str());
+  int err = 0;
+  cl_program program = clCreateProgramWithBinary(context, 1, &id, &size, &ptr, NULL, &err);
+  CHECK2(err, "clCreateProgramWithBinary");
+  assert(program);
+  build(program, id, "");
+  return program;
 }
 
-cl_program compile(cl_device_id device, cl_context context, const string &source, const string &extraArgs,
-                   const vector<pair<string, std::any>> &defines) {
+cl_program compile(cl_context context, cl_device_id device, const string &source, const string &extraArgs,
+                   const vector<string> &defines) {
   string strDefines;
-  for (auto d : defines) {
-    strDefines = strDefines + "-D" + d.first + "=" + toLiteral(d.second) + ' ';
-  }
-  string args = strDefines + extraArgs + " -I. -cl-fast-relaxed-math -cl-std=CL2.0";
+  for (const string& d : defines) { strDefines += "-D" + d + ' '; }
+  
+  // Note: Gpu.cpp also sets -cl-unfasafe-math-optimizations unless -safeMath is specified.
+  string args = strDefines + extraArgs + " -cl-std=CL2.0 -cl-finite-math-only ";
+
+  // -cl-fast-relaxed-math  -cl-unsafe-math-optimizations -cl-denorms-are-zero -cl-mad-enable 
   log("OpenCL args \"%s\"\n", args.c_str());
   
   cl_program program = 0;
 
   if ((program = loadSource(context, source))) {
-    build(program, device, args);
+    build(program, device, std::move(args));
     return program;
   }
   
@@ -278,6 +287,7 @@ cl_program compile(cl_device_id device, cl_context context, const string &source
 cl_kernel makeKernel(cl_program program, const char *name) {
   int err;
   cl_kernel k = clCreateKernel(program, name, &err);
+  if (err == CL_INVALID_KERNEL_NAME) { return nullptr; }
   CHECK2(err, name);
   return k;
 }
@@ -306,10 +316,15 @@ cl_queue makeQueue(cl_device_id d, cl_context c, bool profile) {
 void flush( cl_queue q) { CHECK1(clFlush(q)); }
 void finish(cl_queue q) { CHECK1(clFinish(q)); }
 
-EventHolder run(cl_queue queue, cl_kernel kernel, size_t groupSize, size_t workSize, const string &name) {
-  cl_event event{};
-  CHECK2(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &workSize, &groupSize, 0, NULL, &event), name.c_str());
-  return EventHolder{event};
+EventHolder run(cl_queue queue, cl_kernel kernel, size_t groupSize, size_t workSize, const string &name, bool generateEvent) {
+  if (generateEvent) {
+    cl_event event{};
+    CHECK2(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &workSize, &groupSize, 0, NULL, &event), name.c_str());
+    return EventHolder{event};
+  } else {
+    CHECK2(clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &workSize, &groupSize, 0, NULL, NULL), name.c_str());
+    return {};
+  }
 }
 
 void read(cl_queue queue, bool blocking, cl_mem buf, size_t size, void *data, size_t start) {
