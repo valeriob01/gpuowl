@@ -6,6 +6,9 @@
 
 #include <string>
 #include <set>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 class Args {
 public:
@@ -21,8 +24,7 @@ public:
   string cpu;
   string dump;
   string dir;
-  string resultsFile = "results.txt";
-  string masterDir;
+  
   string uid;
   string binaryFile;
   string verifyPath;
@@ -35,9 +37,16 @@ public:
   bool cleanup = false;
   bool noSpin = false;
   bool safeMath = false;
+
+  u32 proofPow = 8;
+
+  fs::path resultsFile = "results.txt";
+  fs::path masterDir;
+  fs::path tmpDir;
+  fs::path proofResultDir = "proof";
   
-  u32 proofPow = 0;
-  
+  bool keepProof = false;
+
   int carry = CARRY_AUTO;
   u32 blockSize = 0;
   u32 logStep   = 0;

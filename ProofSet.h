@@ -2,11 +2,10 @@
 
 #pragma once
 
-#include "Gpu.h"
-#include "GmpUtil.h"
 #include "File.h"
 #include "common.h"
 #include "Sha3Hash.h"
+#include "MD5.h"
 
 #include <vector>
 #include <string>
@@ -15,10 +14,13 @@
 #include <cinttypes>
 #include <climits>
 
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error Byte order must be Little Endian
+#endif
+
+namespace fs = std::filesystem;
+
 struct ProofUtil {
-  static const u32 MAX_POWER = 10;
-  static const u32 MULTIPLE = (1 << MAX_POWER);
-  
   static Words makeWords(u32 E, u32 init) {
     u32 nWords = (E - 1) / 32 + 1;
     Words x(nWords);
@@ -26,54 +28,95 @@ struct ProofUtil {
     return x;
   }
 
-  static u32 revbin(int nBits, u32 k) {
-    u32 r = 0;    
-    for (u32 bit = 1 << (nBits - 1); bit; bit>>=1, k>>=1) { if (k & 1) { r |= bit; }}
-    return r;
+  static array<u64, 4> hashWords(u32 E, const Words& words) { return std::move(SHA3{}.update(words.data(), (E-1)/8+1)).finish(); }
+  static array<u64, 4> hashWords(u32 E, array<u64, 4> prefix, const Words& words) {
+    return std::move(SHA3{}.update(prefix).update(words.data(), (E-1)/8+1)).finish();
   }
 };
 
-class Proof {
+struct ProofInfo {
+  u32 power;
+  u32 exp;
+  string md5;
+};
+
+class Proof {  
 public:
   u32 E;
   Words B;
   vector<Words> middles;
-  u64 finalHash; // a data check
 
-  // version(1), E, power, finalHash
-  static const constexpr char* HEADER = "PRProof 1 %u %u 0x%" SCNx64 "\n";
+  /*Example header:
+    PRP PROOF\n
+    VERSION=1\n
+    HASHSIZE=64\n
+    POWER=8\n
+    NUMBER=M216091\n
+  */
+  static const constexpr char* HEADER = "PRP PROOF\nVERSION=1\nHASHSIZE=64\nPOWER=%u\nNUMBER=M%u%c";
+
+  static string fileHash(const fs::path& filePath) {
+    File fi = File::openRead(filePath, true);
+    char buf[64 * 1024];
+    MD5 h;
+    u32 size = 0;
+    while ((size = fi.readUpTo(buf, sizeof(buf)))) {
+      h.update(buf, size);
+    }
+    return std::move(h).finish();
+  }
   
-  fs::path save() {
+  static ProofInfo getInfo(const fs::path& proofFile) {
+    string hash = fileHash(proofFile);
+    File fi = File::openRead(proofFile, true);
+    u32 E = 0, power = 0;
+    char c = 0;
+    if (fi.scanf(HEADER, &power, &E, &c) != 3 || c != '\n') {
+      log("Proof file '%s' has invalid header\n", proofFile.string().c_str());
+      throw "Invalid proof header";
+    }
+    return {power, E, hash};
+  }
+  
+  fs::path save(const fs::path& proofResultDir) {
+    fs::create_directories(proofResultDir);
+    
     string strE = to_string(E);
-    fs::path fileName = fs::current_path() / strE / (strE + '-' + hex(finalHash).substr(0, 4) + ".proof");
+    u32 power = middles.size();
+    fs::path fileName = proofResultDir / (strE + '-' + to_string(power) + ".proof");
     File fo = File::openWrite(fileName);
-    fo.printf(HEADER, E, u32(middles.size()), finalHash);
-    fo.write(B);
-    for (const Words& w : middles) { fo.write(w); }
+    fo.printf(HEADER, power, E, '\n');
+    fo.write(B.data(), (E-1)/8+1);
+    for (const Words& w : middles) { fo.write(w.data(), (E-1)/8+1); }
     return fileName;
   }
 
-  static Proof load(fs::path path) {
+  static Proof load(const fs::path& path) {
     File fi = File::openRead(path, true);
-    string headerLine = fi.readLine();
     u32 E = 0, power = 0;
-    u64 finalHash = 0;
-    if (sscanf(headerLine.c_str(), HEADER, &E, &power, &finalHash) != 3) {
-      log("Proof file '%s' has invalid header '%s'\n", path.string().c_str(), headerLine.c_str());
+    char c = 0;
+    if (fi.scanf(HEADER, &power, &E, &c) != 3 || c != '\n') {
+      log("Proof file '%s' has invalid header\n", path.string().c_str());
       throw "Invalid proof header";
     }
-    u32 nWords = (E - 1) / 32 + 1;
-    Words B = fi.read<u32>(nWords);
+    u32 nBytes = (E-1)/8+1;
+    u32 nWords = (E-1)/32+1;
+    Words B(nWords);
+    fi.read(B.data(), nBytes);
     vector<Words> middles;
-    for (u32 i = 0; i < power; ++i) { middles.push_back(fi.read<u32>(nWords)); }
-    return {E, B, middles, finalHash};
+    for (u32 i = 0; i < power; ++i) {
+      Words M(nWords);
+      fi.read(M.data(), nBytes);
+      middles.push_back(std::move(M));
+    }
+    return {E, B, middles};
   }
   
   bool verify(Gpu *gpu) {
     u32 power = middles.size();
     assert(power > 0);
 
-    u32 topK = roundUp(E, ProofUtil::MULTIPLE);
+    u32 topK = roundUp(E, (1 << power));
     assert(topK % (1 << power) == 0);
     assert(topK > E);
     u32 step = topK / (1 << power);
@@ -84,145 +127,42 @@ public:
       log("proof: doing %d iterations\n", topK - E + 1);
       A = gpu->expExp2(A, topK - E + 1);
       isPrime = (A == B);
-      log("the proof indicates %s (%016" PRIx64 " vs. %016" PRIx64 " for a PRP)\n",
-          isPrime ? "probable prime" : "composite", res64(B), res64(A));
+      // log("the proof indicates %s (%016" PRIx64 " vs. %016" PRIx64 " for a PRP)\n",
+      //    isPrime ? "probable prime" : "composite", res64(B), res64(A));
     }
 
     Words A{ProofUtil::makeWords(E, 3)};
     
-    auto hash = SHA3::hash(u64(E), B);
+    auto hash = ProofUtil::hashWords(E, B);
     
     for (u32 i = 0; i < power; ++i) {
       Words& M = middles[i];
-      hash = SHA3::hash(hash, M);
-      A = gpu->expMul(A, hash[0], M);
-      B = gpu->expMul(M, hash[0], B);
-    }
-    
-    if (hash[0] != finalHash) {
-      log("proof: hash %016" PRIx64 " expected %016" PRIx64 "\n", hash[0], finalHash);
-      return false;
+      hash = ProofUtil::hashWords(E, hash, M);
+      u64 h = hash[0];
+      A = gpu->expMul(A, h, M);
+      B = gpu->expMul(M, h, B);
     }
     
     log("proof verification: doing %d iterations\n", step);
-    A = gpu->expExp2(A, step - 1);
-    u64 verificationSign = res64(A);
-    log("proof: verification signature: %016" PRIx64 "\n", verificationSign);
-    A = gpu->expExp2(A, 1);
-    
-    if (A != B) {
-      log("proof: invalid (%016" PRIx64 " expected %016" PRIx64 "); verification %016" PRIx64 "\n",
-          res64(A), res64(B), verificationSign);
-      return false;
-    }
+    A = gpu->expExp2(A, step);
 
-    log("proof: %u proved %s; verification %016" PRIx64 "\n",
-        E, isPrime ? "probable prime" : "composite", verificationSign);
-    
-    return true;
+    bool ok = (A == B);
+    if (ok) {
+      log("proof: %u proved %s\n", E, isPrime ? "probable prime" : "composite");
+    } else {
+      log("proof: invalid (%016" PRIx64 " expected %016" PRIx64 ")\n", res64(A), res64(B));
+    }
+    return ok;
   }
 
 private:
   static u64 res64(const Words& words) { return (u64(words[1]) << 32) | words[0]; }
 };
 
-class ProofSet {
-public:  
-  u32 E;
-  u32 power;
-  u32 topK{roundUp(E, ProofUtil::MULTIPLE)};
-  u32 step{topK / (1 << power)};
+class ProofCache {
+  std::unordered_map<u32, Words> pending;
+  fs::path proofPath;
 
-  ProofSet(u32 E, u32 power) : E{E}, power{power} {
-    assert(E & 1); // E is supposed to be prime
-    assert(power <= ProofUtil::MAX_POWER);
-    assert(topK % step == 0);
-    assert(topK / step == (1u << power));
-  }
-
-  u32 kProofEnd(u32 kEnd) const { return power ? roundUp(kEnd, ProofUtil::MULTIPLE) : kEnd; }
-  
-  u32 firstPersistAt(u32 k) const { return power ? roundUp(k, step): -1; }
-
-  void save(u32 k, const vector<u32>& words) {
-    assert(k > 0 && k <= topK);
-    assert(k % step == 0);
-
-    File f = File::openWrite(proofPath / to_string(k));
-    f.write(words);
-    f.write<u32>({crc32(words)});
-  }
-
-  vector<u32> load(u32 k) const {
-    assert(k > 0 && k <= topK);
-    assert(k % step == 0);
-    
-    File f = File::openRead(proofPath / to_string(k), true);
-    vector<u32> words = f.read<u32>(E / 32 + 2);
-    u32 checksum = words.back();
-    words.pop_back();
-    if (checksum != crc32(words)) {
-      log("checksum %x (expected %x) in '%s'\n", crc32(words), checksum, f.name.c_str());
-      throw fs::filesystem_error{"checksum mismatch", {}};
-    }
-    return words;
-  }
-
-  bool isValidTo(u32 limitK) const {
-    if (!power) { return true; }
-
-    fs::create_directory(proofPath);
-    
-    try {
-      for (u32 k = step; k <= limitK; k += step) { load(k); }
-    } catch (fs::filesystem_error&) {
-      return false;
-    }
-    return true;
-  }
-
-  bool isComplete() const { return isValidTo(topK); }
-
-  Proof computeProof(Gpu *gpu, u64 prpRes64) {
-    assert(power > 0);
-    
-    Words B = load(topK);
-    Words A = ProofUtil::makeWords(E, 3);
-
-    vector<Words> middles;
-    
-    vector<mpz_class> hashes;
-    hashes.emplace_back(1);
-    middles.push_back(load(topK / 2));
-
-    auto hash = SHA3::hash(u64(E), B);
-    hash = SHA3::hash(hash, middles.back());
-    
-    for (u32 p = 1; p < power; ++p) {
-      log("proof: building level %d, hash %016" PRIx64 "\n", (p + 1), hash[0]);
-      u64 h = hash[0];
-      for (int i = 0; i < (1 << (p - 1)); ++i) {
-#if ULONG_MAX > 4294967295
-        hashes.push_back(hashes[i] * h);
-#else
-        // When sizeof(long)==4 (i.e. on Windows), GMP constructors don't take 64-bit int.
-        hashes.push_back(hashes[i] * mpz64(h));
-#endif
-      }
-      Words M = ProofUtil::makeWords(E, 1);
-      u32 s = topK / (1 << (p + 1));
-      for (int i = 0; i < (1 << p); ++i) {
-        Words w = load(s * (2 * i + 1));
-        u32 pos = ProofUtil::revbin(p, (1<<p) - 1 - i);
-        M = gpu->expMul(w, bitsMSB(hashes[pos]), M);
-      }
-      middles.push_back(std::move(M));
-      hash = SHA3::hash(hash, middles.back());
-    }
-    return Proof{E, std::move(B), std::move(middles), hash[0]};
-  }
-
-private:  
   static u32 crc32(const void *data, size_t size) {
     u32 tab[16] = {
                    0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC,
@@ -239,6 +179,163 @@ private:
   }
 
   static u32 crc32(const std::vector<u32>& words) { return crc32(words.data(), sizeof(words[0]) * words.size()); }
+  
+  bool write(u32 k, const Words& words) {
+    File f = File::openWrite(proofPath / to_string(k));
+    try {
+      f.write(words);
+      f.write<u32>({crc32(words)});
+      return true;
+    } catch (fs::filesystem_error& e) {
+      return false;
+    }
+  }
 
-  fs::path proofPath{fs::current_path() / to_string(E) / "proof"};
+  Words read(u32 E, u32 k) const {
+    File f = File::openRead(proofPath / to_string(k), true);
+    vector<u32> words = f.read<u32>(E / 32 + 2);
+    u32 checksum = words.back();
+    words.pop_back();
+    if (checksum != crc32(words)) {
+      log("checksum %x (expected %x) in '%s'\n", crc32(words), checksum, f.name.c_str());
+      throw fs::filesystem_error{"checksum mismatch", {}};
+    }
+    return words;
+  }
+
+
+  void flush() {
+    for (auto it = pending.cbegin(), end = pending.cend(); it != end && write(it->first, it->second); it = pending.erase(it));
+    if (!pending.empty()) {
+      log("Could not write %u residues under '%s' -- hurry make space!\n", u32(pending.size()), proofPath.string().c_str());
+    }
+  }
+  
+public:
+  ProofCache(const fs::path& proofPath) : proofPath{proofPath} {}
+  
+  ~ProofCache() { flush(); }
+  
+  void save(u32 k, const Words& words) {
+    if (pending.empty() && write(k, words)) { return; }    
+    pending[k] = words;
+    flush();
+  }
+
+  Words load(u32 E, u32 k) const {
+    auto it = pending.find(k);
+    return (it == pending.end()) ? read(E, k) : it->second;
+  }
+
+  void clear() { pending.clear(); }
+};
+
+class ProofSet {
+  fs::path exponentDir;
+  fs::path proofPath{exponentDir / "proof"};
+  ProofCache cache{proofPath};
+  
+public:
+  u32 E;
+  u32 power;
+  u32 topK{roundUp(E, (1 << power))};
+  u32 step{topK / (1 << power)};
+
+  static bool canDo(const fs::path& tmpDir, u32 E, u32 power, u32 currentK) {
+    assert(power >= 6 && power <= 9);
+    return ProofSet{tmpDir, E, power}.isValidTo(currentK);
+  }
+  
+  static u32 effectivePower(const fs::path& tmpDir, u32 E, u32 power, u32 currentK) {
+    for (u32 p : {power, 9u, 8u, 7u, 6u}) {
+      log("validating proof residues for power %u\n", p);
+      if (canDo(tmpDir, E, p, currentK)) { return p; }
+    }
+    return 0;
+  }
+  
+  ProofSet(const fs::path& tmpDir, u32 E, u32 power) : exponentDir(tmpDir / to_string(E)), E{E}, power{power} {
+    assert(E & 1); // E is supposed to be prime
+    assert(topK % step == 0);
+    assert(topK / step == (1u << power));
+    fs::create_directories(proofPath);
+  }
+
+  void cleanup() {
+    error_code noThrow;
+    cache.clear();
+    fs::remove_all(proofPath, noThrow);
+    fs::remove(exponentDir, noThrow);
+  }
+  
+  u32 kProofEnd(u32 kEnd) const {
+    if (!power) { return kEnd; }
+    assert(topK > kEnd);
+    return topK;
+  }
+  
+  u32 firstPersistAt(u32 k) const { return power ? roundUp(k, step): -1; }
+
+  void save(u32 k, const Words& words) {
+    assert(k > 0 && k <= topK);
+    assert(k % step == 0);
+    cache.save(k, words);
+  }
+
+  Words load(u32 k) const {
+    assert(k > 0 && k <= topK);
+    assert(k % step == 0);
+    return cache.load(E, k);
+  }
+        
+  bool isValidTo(u32 limitK) const {
+    if (!power) { return true; }    
+    try {
+      for (u32 k = step; k <= limitK; k += step) { load(k); }
+      return true;
+    } catch (fs::filesystem_error&) {
+    } catch (std::ios_base::failure&) {
+    }
+    return false;
+  }
+
+  // A quick-and-dirty version that checks only the first two residues.
+  bool seemsValidTo(u32 limitK) const { return isValidTo(std::min(limitK, 2 * step)); }
+  
+  bool isComplete() const { return isValidTo(topK); }
+  
+  Proof computeProof(Gpu *gpu) {
+    assert(power > 0);
+    
+    Words B = load(topK);
+    Words A = ProofUtil::makeWords(E, 3);
+
+    vector<Words> middles;
+    vector<u64> hashes;
+
+    auto hash = ProofUtil::hashWords(E, B);
+
+    vector<Buffer<i32>> bufVect = gpu->makeBufVector(power);
+    
+    for (u32 p = 0; p < power; ++p) {
+      auto bufIt = bufVect.begin();
+      assert(p == hashes.size());
+      log("proof: building level %d, hash %016" PRIx64 "\n", (p + 1), hash[0]);
+      u32 s = topK / (1 << (p + 1));
+      for (int i = 0; i < (1 << p); ++i) {
+        Words w = load(s * (2 * i + 1));
+        gpu->writeIn(*bufIt++, w);
+        for (int k = 0; i & (1 << k); ++k) {
+          --bufIt;
+          u64 h = hashes[p - 1 - k];
+          gpu->expMul(*(bufIt - 1), h, *bufIt);
+        }
+      }
+      assert(bufIt == bufVect.begin() + 1);
+      middles.push_back(gpu->readAndCompress(bufVect.front()));
+      hash = ProofUtil::hashWords(E, hash, middles.back());
+      hashes.push_back(hash[0]);
+    }
+    return Proof{E, std::move(B), std::move(middles)};
+  }
 };

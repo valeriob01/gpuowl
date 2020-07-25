@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <future>
 #include <optional>
+#include <numeric>
 
 #ifndef M_PIl
 #define M_PIl 3.141592653589793238462643383279502884L
@@ -27,21 +28,35 @@
 #define M_PI 3.141592653589793238462643383279502884
 #endif
 
-#define TAU (2 * M_PIl)
-
 static_assert(sizeof(double2) == 16, "size double2");
 static_assert(sizeof(long double) > sizeof(double), "long double offers extended precision");
 
 // Returns the primitive root of unity of order N, to the power k.
 static double2 root1(u32 N, u32 k) {
-  long double angle = - TAU / N * k;
-  return double2{double(cosl(angle)), double(sinl(angle))};
+  assert(k < N);
+  if (k >= N/2) {
+    auto [c, s] = root1(N, k - N/2);
+    return {-c, -s};
+  } else if (k > N/4) {
+    auto [c, s] = root1(N, N/2 - k);
+    return {-c, s};
+  } else if (k > N/8) {
+    auto [c, s] = root1(N, N/4 - k);
+    return {-s, -c};
+  } else {
+    assert(!(N&7));
+    assert(k <= N/8);
+    N /= 2;
+    long double angle = - M_PIl * k / N;
+    return {cosl(angle), sinl(angle)};    
+  }
 }
 
 static double2 *smallTrigBlock(u32 W, u32 H, double2 *p) {
   for (u32 line = 1; line < H; ++line) {
     for (u32 col = 0; col < W; ++col) {
       *p++ = root1(W * H, line * col);
+      // if(abs((p-1)->first) < 1e-16) { printf("%u %u %u %u %g\n", line, col, W, H, (p-1)->first); }
     }
   }
   return p;
@@ -216,13 +231,8 @@ cl_program compile(const Args& args, cl_context context, u32 N, u32 E, u32 WIDTH
   if (max_accuracy) { defines.push_back({"MAX_ACCURACY", 1}); }
   if (ultra_trig) { defines.push_back({"ULTRA_TRIG", 1}); }
 
-  if (max_accuracy) {
-     defines.push_back({"WEIGHT_STEP_MINUS_1", double(weight(N, E, SMALL_HEIGHT * MIDDLE, 0, 0, 1) - 1.0)});
-     defines.push_back({"IWEIGHT_STEP_MINUS_1", double(invWeight(N, E, SMALL_HEIGHT * MIDDLE, 0, 0, 1) - 1.0)});
-  } else {
-     defines.push_back({"WEIGHT_STEP", double(weight(N, E, SMALL_HEIGHT * MIDDLE, 0, 0, 1))});
-     defines.push_back({"IWEIGHT_STEP", double(invWeight(N, E, SMALL_HEIGHT * MIDDLE, 0, 0, 1))});
-  }
+  defines.push_back({"WEIGHT_STEP_MINUS_1", double(weight(N, E, SMALL_HEIGHT * MIDDLE, 0, 0, 1) - 1)});
+  defines.push_back({"IWEIGHT_STEP_MINUS_1", double(invWeight(N, E, SMALL_HEIGHT * MIDDLE, 0, 0, 1) - 1)});
 
   string clSource = CL_SOURCE;
   for (const string& flag : args.flags) {
@@ -367,6 +377,12 @@ Gpu::Gpu(const Args& args, u32 E, u32 W, u32 BIG_H, u32 SMALL_H, u32 nW, u32 nH,
   queue->zero(bufRoundoff, 8);
   queue->zero(bufCarryMax, 8);
   queue->zero(bufCarryMulMax, 8);
+}
+
+vector<Buffer<i32>> Gpu::makeBufVector(u32 size) {
+  vector<Buffer<i32>> r;
+  for (u32 i = 0; i < size; ++i) { r.emplace_back(queue, "vector", N); }
+  return r;
 }
 
 static FFTConfig getFFTConfig(u32 E, string fftSpec) {
@@ -546,9 +562,9 @@ vector<int> Gpu::readOut(ConstBuffer<int> &buf) {
   return bufAux.read();
 }
 
-void Gpu::writeIn(const vector<u32>& words, Buffer<int>& buf) { writeIn(expandBits(words, N, E), buf); }
+void Gpu::writeIn(Buffer<int>& buf, const vector<u32>& words) { writeIn(buf, expandBits(words, N, E)); }
 
-void Gpu::writeIn(const vector<int>& words, Buffer<int>& buf) {
+void Gpu::writeIn(Buffer<int>& buf, const vector<i32>& words) {
   bufAux = words;
   transposeIn(buf, bufAux);
 }
@@ -612,37 +628,26 @@ Words Gpu::expExp2(const Words& A, u32 n) {
   return readData();
 }
 
-static vector<bool> toBits(u64 x) {
-  vector<bool> r;
-  while (x) {
-    r.push_back(x & 1u);
-    x >>= 1;
-  }
-  reverse(r.begin(), r.end());
-  return r;
+// A:= A^h * B
+void Gpu::expMul(Buffer<i32>& A, u64 h, Buffer<i32>& B) {
+  exponentiateHigh(A, h, buf1, buf2, buf3);
+  modMul(A, B, buf1, buf2, buf3);
 }
 
 // return A^x * B
-Words Gpu::expMul(const Words& A, u64 x, const Words& B) { return expMul(A, toBits(x), B); }
-
-Words Gpu::expMul(const Words& A, const vector<bool>& x, const Words& B) {
-  assert(!x.empty() && x.front());
-  
+Words Gpu::expMul(const Words& A, u64 h, const Words& B) {
   writeData(A);
-  exponentiateHigh(bufData, x, buf1, buf2, buf3);
-  
   writeCheck(B);
-  modMul(bufData, bufCheck, buf1, buf2, buf3);
+  expMul(bufData, h, bufCheck);
   return readData();
 }
 
-void Gpu::exponentiateHigh(Buffer<int>& bufInOut, const vector<bool>& exp, Buffer<double>& bufBaseLow, Buffer<double>& buf1, Buffer<double>& buf2) {
-  assert(exp.empty() || exp.front());
-  if (exp.empty()) {
+void Gpu::exponentiateHigh(Buffer<int>& bufInOut, u64 exp, Buffer<double>& bufBaseLow, Buffer<double>& buf1, Buffer<double>& buf2) {
+  if (exp == 0) {
     queue->zero(bufInOut, N);
     u32 data = 1;
     fillBuf(queue->get(), bufInOut.get(), &data, sizeof(data));
-  } else if (exp.size() > 1) {
+  } else if (exp > 1) {
     fftP(buf1, bufInOut);
     tW(buf2, buf1);
     fftHin(bufBaseLow, buf2);
@@ -656,41 +661,51 @@ void Gpu::exponentiateHigh(Buffer<int>& bufInOut, const vector<bool>& exp, Buffe
 // All buffers are in "low" position.
 void Gpu::exponentiateLow(Buffer<double>& out, const Buffer<double>& base, u64 exp, Buffer<double>& tmp, Buffer<double>& tmp2) {
   assert(exp > 0);
-  
   if (exp == 1) {
     out << base;    
   } else {
-    exponentiateCore(out, base, toBits(exp), tmp);
+    exponentiateCore(out, base, exp, tmp);
     carryFused(tmp, out);
     tW(tmp2, tmp);
     fftHin(out, tmp2);
   }
 }
 
-// See "left-to-right binary exponentiation" on wikipedia
-void Gpu::exponentiateCore(Buffer<double>& out, const Buffer<double>& base, const vector<bool>& exp, Buffer<double>& tmp) {
-  assert(exp.size() >= 2);
-  assert(exp.front());
+static bool testBit(u64 x, int bit) { return x & (u64(1) << bit); }
 
-  // square(tmp, base); fftHout(tmp);
+// does either carrryFused() or the expanded version depending on useLongCarry
+void Gpu::doCarry(Buffer<double>& out, Buffer<double>& in) {
+  if (useLongCarry) {
+    fftW(out, in);
+    carryA(in, out);
+    carryB(in);
+    fftP(out, in);
+  } else {
+    carryFused(out, in);
+  }
+}
+
+// See "left-to-right binary exponentiation" on wikipedia
+void Gpu::exponentiateCore(Buffer<double>& out, const Buffer<double>& base, u64 exp, Buffer<double>& tmp) {
+  assert(exp >= 2);
+
   tailSquareLow(tmp, base);
   tH(out, tmp);
   
-  for (int p = 1, sz = exp.size();; ++p) {
-    if (exp[p]) {
-      carryFused(tmp, out);
+  int p = 63;
+  while (!testBit(exp, p)) { --p; }
+  
+  for (--p; ; --p) {
+    if (testBit(exp, p)) {
+      doCarry(tmp, out);
       tW(out, tmp);
-
-      // fftHin(tmp, out);
-      // multiply(tmp, base);
-      // fftHout(tmp);
       tailFusedMulLow(tmp, out, base);
       tH(out, tmp);
     }
     
-    if (p == sz - 1) { break; }
+    if (!p) { break; }
 
-    carryFused(tmp, out);
+    doCarry(tmp, out);
     tW(out, tmp);
     tailFusedSquare(tmp, out);
     tH(out, tmp);
@@ -1055,7 +1070,7 @@ u32 Gpu::modSqLoopTo(Buffer<int>& io, u32 from, u32 to) {
   return to;
 }
 
-tuple<bool, u64, u32> Gpu::isPrimePRP(u32 E, const Args &args, std::atomic<u32>& factorFoundForExp) {
+tuple<bool, u64, u32, string> Gpu::isPrimePRP(u32 E, const Args &args, std::atomic<u32>& factorFoundForExp) {
   u32 k = 0, blockSize = 0, nErrors = 0;
 
   {
@@ -1069,13 +1084,18 @@ tuple<bool, u64, u32> Gpu::isPrimePRP(u32 E, const Args &args, std::atomic<u32>&
   u32 checkStep = checkStepForErrors(args.logStep, nErrors);
   
   u32 startK = k;
-  ProofSet proofSet{E, args.proofPow};
-  if (!proofSet.isValidTo(startK)) {
-    log("Proof generation at power %d is disabled because of missing checkpoints\n", args.proofPow);
-    log("If the proof is desired, you may either restart the PRP test or reduce the power\n");
-    proofSet = ProofSet{E, 0};
+
+  u32 power = ProofSet::effectivePower(args.tmpDir, E, args.proofPow, startK);
+  if (!power) {
+    log("Proof disabled because of missing checkpoints\n");
+  } else if (power != args.proofPow) {
+    log("Proof using power %u (vs %u) for %u\n", power, args.proofPow, E);
+  } else {
+    log("Proof using power %u\n", power);
   }
   
+  ProofSet proofSet{args.tmpDir, E, power};
+
   Signal signal;
 
   // Number of sequential errors (with no success in between). If this ever gets high enough, stop.
@@ -1101,13 +1121,9 @@ tuple<bool, u64, u32> Gpu::isPrimePRP(u32 E, const Args &args, std::atomic<u32>&
     
     u32 nextK = k + blockSize;
 
-    u32 persistK = proofSet.firstPersistAt(k + 1);
-    assert(k < persistK);
-
-    if (persistK <= nextK && persistK < kEnd) {
+    for (u32 persistK = proofSet.firstPersistAt(k+1); persistK <= nextK && persistK < kEnd; persistK = proofSet.firstPersistAt(k + 1)) {
       k = modSqLoopTo(bufData, k, persistK);
-      
-      log("proof: save residue @ %u\n", persistK);
+      // log("proof: save residue @ %u\n", k);
       proofSet.save(k, readData());
     }
     
@@ -1121,10 +1137,9 @@ tuple<bool, u64, u32> Gpu::isPrimePRP(u32 E, const Args &args, std::atomic<u32>&
       log("%s %8d / %d, %s\n", isPrime ? "PP" : "CC", kEnd, E, hex(finalRes64).c_str());
     }
 
-    if (persistK <= nextK && kEnd <= persistK) {
-      k = modSqLoopTo(bufData, k, persistK);
-      
-      log("proof: save residue @ %u\n", persistK);
+    for (u32 persistK = proofSet.firstPersistAt(k+1); persistK <= nextK && kEnd <= persistK; persistK = proofSet.firstPersistAt(k + 1)) {
+      k = modSqLoopTo(bufData, k, persistK);      
+      // log("proof: save residue @ %u\n", k);
       proofSet.save(k, readData());
     }
     
@@ -1145,7 +1160,7 @@ tuple<bool, u64, u32> Gpu::isPrimePRP(u32 E, const Args &args, std::atomic<u32>&
     if (factorFoundForExp == E) {
       log("Aborting the PRP test because a factor was found\n");
       factorFoundForExp = 0;
-      return {false, 0, u32(-1)};
+      return {false, 0, u32(-1), {}};
     } 
     
     if (doCheck) {
@@ -1160,7 +1175,18 @@ tuple<bool, u64, u32> Gpu::isPrimePRP(u32 E, const Args &args, std::atomic<u32>&
       if (ok) {
         if (k < kEnd) { prpState.save(false); }
         doBigLog(E, k, res64, ok, timeExcludingCheck, kEndEnd, nErrors, itTimer.reset(k));
-        if (k >= kEndEnd) { return {isPrime, finalRes64, nErrors}; }
+        if (k >= kEndEnd) {
+          fs::path proofPath;
+          if (proofSet.power > 0) {
+            proofPath = proofSet.computeProof(this).save(args.proofResultDir);
+            log("PRP-Proof '%s' generated\n", proofPath.string().c_str());
+            if (!args.keepProof) {
+              log("Proof: cleaning up temporary storage\n");
+              proofSet.cleanup();
+            }
+          }
+          return {isPrime, finalRes64, nErrors, proofPath.string()};
+        }
         nSeqErrors = 0;      
       } else {
         doBigLog(E, k, res64, ok, timeExcludingCheck, kEndEnd, nErrors, itTimer.reset(k));

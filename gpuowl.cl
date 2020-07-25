@@ -76,8 +76,8 @@ G_H        "group height"
 #pragma OPENCL EXTENSION cl_khr_fp64 : enable
 #endif
 
-// We are not using 64-bit atomics at the present time
-//#pragma OPENCL EXTENSION cl_khr_int64_base_atomics : enable
+// 64-bit atomics used in kernel sum64
+#pragma OPENCL EXTENSION cl_khr_int64_base_atomics : enable
 //#pragma OPENCL EXTENSION cl_khr_int64_extended_atomics : enable
 
 #if DEBUG
@@ -266,16 +266,6 @@ T add1_m2(T x, T y) {
 #endif
 }
 
-T sub1(T x, T y) {
-#if !NO_OMOD
-  T tmp;
-  __asm("v_add_f64 %0, %1, -%2" : "=v" (tmp) : "v" (x), "v" (y));
-  return tmp;
-#else
-  return x - y;
-#endif  
-}
-
 T sub1_m2(T x, T y) {
 #if !NO_OMOD
   T tmp;
@@ -297,7 +287,8 @@ T mul1_m2(T x, T y) {
 #endif
 }
 
-// Force generation of an FMA instruction where second argument is a constant
+// Force generation of an FMA instruction where second argument is a constant.
+// (as fma() is not necesarilly preserved with -cl-fast-relaxed-math )
 T forced_fma_by_const(T x, const T y, T z) {
 #if HAS_ASM
   double out;
@@ -308,17 +299,8 @@ T forced_fma_by_const(T x, const T y, T z) {
 #endif
 }
 
-// Multiply by (1+const) using either an FMA or MUL instruction for maximum precision
-// On Radeon VII, an FMA is 8 clocks whereas a MUL is 4 clocks.
-T mul_by_const_plus_1(T x, const T y) {
-  if ((((as_uint2(y).y & 0x7FF00000) == 0x3FE00000) && ((as_uint2(y).x & 1) == 0)) ||	// Exp = -1 and LSB = 0
-      (((as_uint2(y).y & 0x7FF00000) == 0x3FD00000) && ((as_uint2(y).x & 3) == 0)) ||	// Exp = -2 and two LSBs = 0
-      (((as_uint2(y).y & 0x7FF00000) == 0x3FC00000) && ((as_uint2(y).x & 7) == 0))) {	// Exp = -3 and three LSBs = 0
-    return x * (1.0 + y);
-  } else {
-    return forced_fma_by_const(x, y, x);
-  }
-}
+// Multiply by (1+const).
+T mul_by_const_plus_1(T x, const T y) { return forced_fma_by_const(x, y, x); }
 
 T mad1(T x, T y, T z) { return x * y + z; }
 
@@ -361,7 +343,6 @@ T msb1_m4(T a, T b, T c) {
   return 4 * mad1(a, b, -c);
 #endif
 }
-
 
 // complex add * 2
 T2 add_m2(T2 a, T2 b) { return U2(add1_m2(a.x, b.x), add1_m2(a.y, b.y)); }
@@ -618,10 +599,9 @@ T2 foo(T2 a) { return foo2(a, a); }
 T2 foo_m2(T2 a) { return foo2_m2(a, a); }
 
 // Same as X2(a, b), b = mul_t4(b)
-#define X2_mul_t4(a, b) { T2 t = a; a = t + b; t.x = sub1(b.x, t.x); b.x = sub1(t.y, b.y); b.y = t.x; }
+#define X2_mul_t4(a, b) { T2 t = a; a = t + b; t.x = b.x - t.x; b.x = t.y - b.y; b.y = t.x; }
 
 #define X2(a, b) { T2 t = a; a = t + b; b = t - b; }
-// { T2 t = a; a = t + b; b.x = sub1(t.x, b.x); b.y = sub1(t.y, b.y); }
 
 // Same as X2(a, conjugate(b))
 #define X2conjb(a, b) { T2 t = a; a.x = a.x + b.x; a.y = a.y - b.y; b.x = t.x - b.x; b.y = t.y + b.y; }
@@ -2173,9 +2153,6 @@ double2 reducedCosSin(i32 k, i32 n) {
 #endif
 }
 
-
-
-
 // Returns e^(-i * pi * k/n)
 double2 slowTrig(i32 k, i32 n, i32 kBound) {
   assert(n % 4 == 0);
@@ -2929,7 +2906,6 @@ KERNEL(G_W) NAME(P(T2) out, CP(T2) in, P(i64) carryShuttle, P(u32) ready, Trig s
     else if (((i * STEP) % NW) * (8 / NW) == 5) invWeight = optionalDouble(mul_by_const_plus_1(baseInvWeight, TWO_TO_MINUS_5_8TH_MINUS_1));
     else if (((i * STEP) % NW) * (8 / NW) == 6) invWeight = optionalDouble(mul_by_const_plus_1(baseInvWeight, TWO_TO_MINUS_6_8TH_MINUS_1));
     else if (((i * STEP) % NW) * (8 / NW) == 7) invWeight = optionalDouble(mul_by_const_plus_1(baseInvWeight, TWO_TO_MINUS_7_8TH_MINUS_1));
-    invWeight2 = optionalDouble(mul_by_const_plus_1(invWeight, IWEIGHT_STEP_MINUS_1));
 #else
     else if ((STEP % NW) * (8 / NW) == 1) invWeight = optionalDouble(invWeight * TWO_TO_MINUS_1_8TH);
     else if ((STEP % NW) * (8 / NW) == 2) invWeight = optionalDouble(invWeight * TWO_TO_MINUS_2_8TH);
@@ -2938,8 +2914,8 @@ KERNEL(G_W) NAME(P(T2) out, CP(T2) in, P(i64) carryShuttle, P(u32) ready, Trig s
     else if ((STEP % NW) * (8 / NW) == 5) invWeight = optionalDouble(invWeight * TWO_TO_MINUS_5_8TH);
     else if ((STEP % NW) * (8 / NW) == 6) invWeight = optionalDouble(invWeight * TWO_TO_MINUS_6_8TH);
     else if ((STEP % NW) * (8 / NW) == 7) invWeight = optionalDouble(invWeight * TWO_TO_MINUS_7_8TH);
-    invWeight2 = optionalDouble(invWeight * IWEIGHT_STEP);
 #endif
+    invWeight2 = optionalDouble(mul_by_const_plus_1(invWeight, IWEIGHT_STEP_MINUS_1));
 
 #if STATS
     roundMax = max(roundMax, roundoff(conjugate(u[i]), U2(invWeight, invWeight2)));
@@ -3038,7 +3014,6 @@ KERNEL(G_W) NAME(P(T2) out, CP(T2) in, P(i64) carryShuttle, P(u32) ready, Trig s
     else if (((i * STEP) % NW) * (8 / NW) == 5) weight = optionalHalve(mul_by_const_plus_1(baseWeight, TWO_TO_5_8TH_MINUS_1));
     else if (((i * STEP) % NW) * (8 / NW) == 6) weight = optionalHalve(mul_by_const_plus_1(baseWeight, TWO_TO_6_8TH_MINUS_1));
     else if (((i * STEP) % NW) * (8 / NW) == 7) weight = optionalHalve(mul_by_const_plus_1(baseWeight, TWO_TO_7_8TH_MINUS_1));
-    weight2 = optionalHalve(mul_by_const_plus_1(weight, WEIGHT_STEP_MINUS_1));
 #else
     else if ((STEP % NW) * (8 / NW) == 1) weight = optionalHalve(weight * TWO_TO_1_8TH);
     else if ((STEP % NW) * (8 / NW) == 2) weight = optionalHalve(weight * TWO_TO_2_8TH);
@@ -3047,8 +3022,8 @@ KERNEL(G_W) NAME(P(T2) out, CP(T2) in, P(i64) carryShuttle, P(u32) ready, Trig s
     else if ((STEP % NW) * (8 / NW) == 5) weight = optionalHalve(weight * TWO_TO_5_8TH);
     else if ((STEP % NW) * (8 / NW) == 6) weight = optionalHalve(weight * TWO_TO_6_8TH);
     else if ((STEP % NW) * (8 / NW) == 7) weight = optionalHalve(weight * TWO_TO_7_8TH);
-    weight2 = optionalHalve(weight * WEIGHT_STEP);
 #endif
+    weight2 = optionalHalve(mul_by_const_plus_1(weight, WEIGHT_STEP_MINUS_1));
 
     u[i].x = (double) wu[i].x * weight;
     u[i].y = (double) wu[i].y * weight2;

@@ -23,8 +23,11 @@ string Args::mergeArgs(int argc, char **argv) {
   return ret;
 }
 
-vector<pair<string, string>> splitArgLine(const string& line) {
+vector<pair<string, string>> splitArgLine(const string& inputLine) {
   vector<pair<string, string>> ret;
+
+  // The line must be ended with at least one space for the regex to function correctly.
+  string line = inputLine + ' ';
   std::regex rx("\\s*(-+\\w+)\\s+([^-]\\S*)?\\s*([^-]*)");
   for (std::sregex_iterator it(line.begin(), line.end(), rx); it != std::sregex_iterator(); ++it) {
     smatch m = *it;
@@ -61,8 +64,12 @@ void Args::printHelp() {
 -prp <exponent>    : run a single PRP test and exit, ignoring worktodo.txt
 -pm1 <exponent>    : run a single P-1 test and exit, ignoring worktodo.txt
 -ll <exponent>     : run a single LL test and exit, ignoring worktodo.txt
--verify <file>|<exponent> : verify PRP-proof contained in <file> or in the folder <exponent>/
--proof [<power>]   : enable PRP proof generation. Default <power> is 9.
+-verify <file>     : verify PRP-proof contained in <file>
+-proof <power>     : Valid <power> values are 6 to 9.
+                     By default a proof of power 8 is generated, using 3GB of temporary disk space for a 100M exponent.
+                     A lower power reduces disk space requirements but increases the verification cost.
+                     A proof of power 9 uses 6GB of disk space for a 100M exponent and enables faster verification.
+-tmpDir <dir>      : specify a folder with plenty of disk space where temporary proof checkpoints will be stored.
 -results <file>    : name of results file, default 'results.txt'
 -iters <N>         : run next PRP test for <N> iterations and exit. Multiple of 10000.
 -maxAlloc          : limit GPU memory usage to this value in MB (needed on non-AMD GPUs)
@@ -116,16 +123,42 @@ static int getSeqId(const std::string& uid) {
 void Args::parse(string line) {  
   auto args = splitArgLine(line);
   for (const auto& [key, s] : args) {
+    // log("key '%s'\n", key.c_str());
     if (key == "-h" || key == "--help") { printHelp(); throw "help"; }
-    else if (key == "-proof") { proofPow = s.empty() ? 9 : stoi(s); }
-    else if (key == "-verify") {
+    else if (key == "-proof") {
+      int power = 0;
+      if (s.empty() || (power = stoi(s)) < 6 || power > 9) {
+        log("-proof expects <power> 6 - 9 (found '%s')\n", s.c_str());
+        throw "-proof expects <power> 6 - 9";
+      }
+      proofPow = power;
+      assert(proofPow >= 6 && proofPow <= 9);
+    } else if (key == "-tmpDir") {
+      if (s.empty()) {
+        log("-tmpDir needs <dir>\n");
+        throw "-tmpDir needs <dir>";
+      }
+      tmpDir = s;
+    } else if (key == "-keep") {
+      if (s != "proof") {
+        log("-keep requires 'proof'\n");
+        throw "-keep without proof";
+      }
+      keepProof = true;
+    } else if (key == "-verify") {
       if (s.empty()) {
         log("-verify needs <proof-file> or <exponent>\n");
         throw "-verify without proof-file";
       }
       verifyPath = s;
     }
-    else if (key == "-pool") { masterDir = s; }
+    else if (key == "-pool") {
+      masterDir = s;
+      if (!masterDir.is_absolute()) {
+        log("-pool <path> requires an absolute path\n");
+        throw("-pool <path> requires an absolute path");
+      }
+    }
     else if (key == "-results") { resultsFile = s; }
     else if (key == "-maxBufs") { maxBuffers = stoi(s); }
     else if (key == "-maxAlloc") { maxAlloc = size_t(stoi(s)) << 20; }
@@ -138,7 +171,6 @@ void Args::parse(string line) {
     else if (key == "-B2") { B2 = stoi(s); }
     else if (key == "-rB2") { B2_B1_ratio = stoi(s); }
     else if (key == "-fft") { fftSpec = s; }
-      // fftSize = stoi(s) * ((s.back() == 'K') ? 1024 : ((s.back() == 'M') ? 1024 * 1024 : 1)); }
     else if (key == "-dump") { dump = s; }
     else if (key == "-user") { user = s; }
     else if (key == "-cpu") { cpu = s; }
@@ -193,10 +225,11 @@ void Args::parse(string line) {
   }
   
   if (!masterDir.empty()) {
-    if (resultsFile.find_first_of('/') == std::string::npos) {
-      resultsFile = masterDir + '/' + resultsFile;
-    }
+    assert(masterDir.is_absolute());
+    if (proofResultDir.is_relative()) { proofResultDir = masterDir / proofResultDir; }
+    if (resultsFile.is_relative()) { resultsFile = masterDir / resultsFile; }
   }
+  
   File::openAppend(resultsFile);  // verify that it's possible to write results
 }
 

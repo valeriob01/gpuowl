@@ -54,7 +54,12 @@ std::optional<Task> parse(const std::string& line) {
 void remove(const std::string& s) { ::remove(s.c_str()); }
 void rename(const std::string& a, const std::string& b) { ::rename(a.c_str(), b.c_str()); }
 
-bool deleteLine(const std::string& fileName, const std::string& targetLine) {
+fs::path operator+(fs::path p, const std::string& tail) {
+  p += tail;
+  return p;
+}
+
+bool deleteLine(const fs::path& fileName, const std::string& targetLine) {
   assert(!targetLine.empty());
   bool lineDeleted = false;
   {
@@ -69,7 +74,7 @@ bool deleteLine(const std::string& fileName, const std::string& targetLine) {
   }
 
   if (!lineDeleted) {
-    log("'%s': could not find the line '%s' to delete\n", fileName.c_str(), targetLine.c_str());
+    log("'%s': could not find the line '%s' to delete\n", fileName.string().c_str(), targetLine.c_str());
     return false;
   }
   remove(fileName + "-bak");
@@ -78,7 +83,7 @@ bool deleteLine(const std::string& fileName, const std::string& targetLine) {
   return true;
 }
 
-std::optional<Task> firstGoodTask(const std::string& fileName) {
+std::optional<Task> firstGoodTask(const fs::path& fileName) {
   for (const string& line : File::openRead(fileName)) {
     if (optional<Task> maybeTask = parse(line)) { return maybeTask; }
   }
@@ -111,7 +116,7 @@ std::optional<Task> Worktodo::getTask(Args &args) {
   }
   
   if (!args.masterDir.empty()) {
-    string globalWorktodo = args.masterDir + '/' + worktodoTxt;
+    fs::path globalWorktodo = args.masterDir / worktodoTxt;
     if (optional<Task> task = firstGoodTask(globalWorktodo)) {
       File::append(worktodoTxt, task->line);
       deleteLine(globalWorktodo, task->line);

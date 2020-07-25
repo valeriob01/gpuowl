@@ -30,7 +30,7 @@ class File {
     std::string sname{name.string()};
     std::unique_ptr<FILE> f{fopen(sname.c_str(), mode)};
     if (!f && doLog) {
-      log("Can't open '%s' (mode '%s')\n", name.c_str(), mode);
+      log("Can't open '%s' (mode '%s')\n", name.string().c_str(), mode);
       throw(fs::filesystem_error("can't open file"s, name, {}));
     }
     return {std::move(f), sname};
@@ -70,10 +70,12 @@ public:
   const std::string name;
   
   template<typename T>
-  void write(const vector<T>& v) {
-    if (!fwrite(v.data(), v.size() * sizeof(T), 1, get())) { throw(std::ios_base::failure((name + ": can't write data").c_str())); }
-  }
+  void write(const vector<T>& v) { write(v.data(), v.size() * sizeof(T)); }
 
+  void write(const void* data, u32 nBytes) {
+    if (!fwrite(data, nBytes, 1, get())) { throw(std::ios_base::failure((name + ": can't write data").c_str())); }
+  }
+  
   void flush() { fflush(get()); }
   
   int printf(const char *fmt, ...) __attribute__((format(printf, 2, 3))) {
@@ -84,6 +86,14 @@ public:
     return ret;
   }
 
+  int scanf(const char *fmt, ...) __attribute__((format(scanf, 2, 3))) {
+    va_list va;
+    va_start(va, fmt);
+    int ret = vfscanf(ptr.get(), fmt, va);
+    va_end(va);
+    return ret;
+  }
+  
   void write(string_view s) {
     if (fwrite(s.data(), s.size(), 1, ptr.get()) != 1) {
       throw fs::filesystem_error("can't write to file"s, name, {});
@@ -143,12 +153,16 @@ public:
   std::vector<T> read(u32 nWords) {
     vector<T> ret;
     ret.resize(nWords);
-    if (!fread(ret.data(), nWords * sizeof(T), 1, get())) {
-      throw(std::ios_base::failure(name + ": can't read"));
-    }
+    read(ret.data(), nWords * sizeof(T));
     return ret;
   }
 
+  void read(void* data, u32 nBytes) {
+    if (!fread(data, nBytes, 1, get())) { throw(std::ios_base::failure(name + ": can't read")); }
+  }
+
+  u32 readUpTo(void* data, u32 nUpToBytes) { return fread(data, 1, nUpToBytes, get()); }
+  
   string readAll() {
     size_t sz = size();
     return {read<char>(sz).data(), sz};

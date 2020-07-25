@@ -17,7 +17,7 @@ extern string globalCpuName;
 
 namespace fs = std::filesystem;
 
-void readConfig(Args& args, const std::string& path, bool doLog) {
+static void readConfig(Args& args, const fs::path& path, bool doLog) {
   if (auto file = File::openRead(path)) {
     // log("reading %s\n", path.c_str());
     while (true) {
@@ -30,13 +30,15 @@ void readConfig(Args& args, const std::string& path, bool doLog) {
       }
     }
   } else {
-    if (doLog) { log("Note: not found '%s'\n", path.c_str()); }
+    if (doLog) { log("Note: not found '%s'\n", path.string().c_str()); }
   }
 }
 
 int main(int argc, char **argv) {
   initLog();
   log("gpuowl %s\n", VERSION);
+  // log("%s %s\n", MD5::hash(""s).c_str(), MD5::hash("The quick brown fox jumps over the lazy dog"s).c_str());
+  
   
   Background background;
 
@@ -53,16 +55,15 @@ int main(int argc, char **argv) {
       initLog("gpuowl.log");
     }
 
-    string poolDir{};
-    {
-      Args args;
-      readConfig(args, "config.txt", false);
-      args.parse(mainLine);
-      poolDir = args.masterDir;
-    }
+    fs::path poolDir = [&mainLine](){
+                         Args args;
+                         readConfig(args, "config.txt", false);
+                         args.parse(mainLine);
+                         return args.masterDir;
+                       }();
 
     Args args;
-    if (!poolDir.empty()) { readConfig(args, poolDir + '/' + "config.txt", true); }
+    if (!poolDir.empty()) { readConfig(args, poolDir / "config.txt", true); }
     readConfig(args, "config.txt", true);
     if (!mainLine.empty()) {
       log("config: %s\n", mainLine.c_str());

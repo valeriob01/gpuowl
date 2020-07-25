@@ -3,6 +3,7 @@
 #pragma once
 
 #include "common.h"
+#include <array>
 
 template <typename H>
 class Hash {
@@ -16,14 +17,17 @@ public:
     return std::move(hash).finish();
   }
 
-  void update(u32 x) { h.update(&x, sizeof(x)); }
-  void update(u64 x) { h.update(&x, sizeof(x)); }
-  
-  template<typename T>
-  void update(const vector<T>& v) { h.update(v.data(), v.size() * sizeof(T)); }
+  Hash& update(const void* data, u32 size) { h.update(data, size); return *this; }
+  // Hash&& update(const void* data, u32 size) && { h.update(data, size); return move(*this); }
 
   template<typename T, std::size_t N>
-  void update(const array<T, N>& v) { h.update(v.data(), N * sizeof(T)); }
+  Hash&& update(const array<T, N>& v) && { h.update(v.data(), N * sizeof(T)); return move(*this); }
+
+  void update(u32 x) { h.update(&x, sizeof(x)); }
+  void update(u64 x) { h.update(&x, sizeof(x)); }
+
+  template<typename T>
+  void update(const vector<T>& v) { h.update(v.data(), v.size() * sizeof(T)); }
 
   void update(const string& s) {h.update(s.c_str(), s.size()); }
   
